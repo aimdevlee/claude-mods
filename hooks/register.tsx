@@ -10,18 +10,21 @@ import type { EngineInterface, Register } from 'claude-code'
  * `bin/player status` and redraws. The transport Buttons are click-only — no
  * hotkeys, so typing digits into the composer stays typing digits.
  *
- * The band draws at one of two densities, chosen with `/player compact` or
- * `/player normal` and remembered for the session. They draw in different
- * places, which is the point of the split:
+ * The band draws at one of two densities. Compact is the resting state: a
+ * session that starts with music playing shows it without a command being run,
+ * bare `/player` opens the full band and closes it again, and closing falls
+ * back to compact rather than to nothing — it costs no room of its own.
+ * `/player compact` and `/player normal` name them explicitly. They draw in
+ * different places, which is the point of the split:
  *
  *   compact  the first row of the footer, directly under the prompt — the
  *            track, a meter, transport. Always there while something plays, so
  *            there is nothing to toggle and no cover; the engine's own mode
  *            labels are redrawn beneath it, and when Music.app goes idle the
  *            footer is left exactly as it was.
- *   normal   the band above the prompt (default) — 4 rows beside a 12x4 cover,
- *            adding the byline, the volume and the mode buttons. `/player`
- *            toggles it, and the status row carries the track while it is down.
+ *   normal   the band above the prompt — 4 rows beside a 12x4 cover, adding
+ *            the byline, the volume and the mode buttons. `/player` opens it
+ *            and `/player` again puts compact back.
  *
  * In normal a Raster of the cover sits on the left (a 2x2 pixel block per
  * terminal cell, via the quadrant blocks) and the text rows fill its height
@@ -75,7 +78,10 @@ export const DENSITIES: Record<Density, {
   normal: { art: 12, rows: 4, byline: true, modes: true, meter: 16, volumeMeter: 8 },
 }
 
-const DEFAULT_DENSITY: Density = 'normal'
+// Compact by default: it lives in the footer and needs no command to appear,
+// so a session that starts with music playing shows it without being asked.
+// `/player` still opens the full band, and `/player compact` comes back here.
+const DEFAULT_DENSITY: Density = 'compact'
 
 // The hint line has no width to measure — it is one row the engine sizes — so
 // compact lays itself out against a fixed budget rather than the terminal's.
@@ -331,15 +337,15 @@ export const register: Register = on => {
   let density: Density = DEFAULT_DENSITY
 
   /**
-   * What the status row should say right now. It is the fallback for when the
-   * track is not already on screen: the full band draws it above the prompt,
-   * and compact draws it on the hint line, so in both of those the row would
-   * only repeat what is already there.
+   * What the status row should say right now: nothing, whenever the track is
+   * already drawn somewhere. Compact shows it in the footer and normal shows
+   * it above the prompt, and closing the band drops back to compact rather
+   * than to nothing, so in practice the row stays quiet and this is a guard
+   * rather than a display of its own — it keeps the row from doubling the
+   * footer if a future mode ever leaves the track unshown.
    */
   const rowFor = (t: Track) =>
-    (isShown && density !== 'compact') || (density === 'compact' && t.title !== undefined)
-      ? undefined
-      : statusLineOf(t)
+    density === 'compact' || isShown ? undefined : statusLineOf(t)
 
   /**
    * What identifies a cover: re-export only when the track itself changes —
@@ -412,7 +418,7 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description:
-        'Apple Music above the prompt: /player toggles the band, /player <song> plays it, compact | normal set how much the band draws, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
+        'Apple Music in the footer: a playing track shows there by itself, /player opens the full band above the prompt and closes it again, /player <song> plays it, compact | normal name the two, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
       argumentHint: '[song | pause | next | compact | normal | search <song> | playlist <name> | close]',
     })
     const engine = host
@@ -427,6 +433,10 @@ export const register: Register = on => {
     const engine = host
     const query = e.args.trim()
     if (query === 'close' || query === 'off') {
+      // Closing the band leaves compact behind rather than nothing: it is the
+      // footer row, which costs no space of its own. `/player compact` is the
+      // same thing said explicitly.
+      density = 'compact'
       isShown = false
       engine.invalidate()
       engine.status(rowFor(track))
@@ -462,8 +472,14 @@ export const register: Register = on => {
         return { text: out || `nothing for "${query}"` }
       }
 
-      isShown = true
-      engine.status(undefined)
+      // Playing or pausing does not change where the band is drawn: compact is
+      // already on screen and has nothing to open, and the full band is opened
+      // by `/player` alone. Only mark it shown when that is the mode, or the
+      // status row would be silenced for a band that is not there.
+      if (density !== 'compact') {
+        isShown = true
+        engine.status(undefined)
+      }
 
       if (TRANSPORT.has(verb)) {
         await act(engine, verb, ...(args ? [args] : []))
@@ -473,10 +489,21 @@ export const register: Register = on => {
       await act(engine, 'play', query)
       return { text: note ?? `playing: ${track.title ?? query}` }
     }
-    isShown = !isShown
+    // Bare `/player` opens the full band and closes it again. Compact is the
+    // resting state rather than "off": it costs no room of its own, so closing
+    // the band falls back to it instead of to nothing. The toggle therefore
+    // moves between the two modes, which is also what makes it work from a
+    // session that started in compact without a command ever being run.
+    if (density === 'compact') {
+      density = 'normal'
+      isShown = true
+    } else {
+      density = 'compact'
+      isShown = false
+    }
     engine.status(rowFor(track))
     engine.invalidate()
-    if (isShown) void poll(engine).catch(() => undefined)
+    void poll(engine).catch(() => undefined)
     return {}
   })
 
@@ -559,6 +586,9 @@ export const register: Register = on => {
           key="close"
           dimColor
           onPress={() => {
+            // Same as `/player` and `/player close`: closing the band drops
+            // back to compact, not to nothing.
+            density = 'compact'
             isShown = false
             engine.invalidate()
             engine.status(rowFor(track))

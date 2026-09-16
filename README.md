@@ -44,7 +44,7 @@ claude --plugin-dir /path/to/claude-mods
 ### 사용
 
 ```
-/player                     밴드 열기 / 닫기
+/player                     큰 밴드 열기 / 닫기 (닫으면 compact로)
 /player 밤편지               보관함 + 카탈로그를 함께 순위 매겨 재생 (없으면 Music.app에 띄움)
 /player 밤편지 - 아이유        아티스트를 붙여 같은 제목의 다른 곡과 구분
 /player pause | next | prev | toggle
@@ -54,8 +54,8 @@ claude --plugin-dir /path/to/claude-mods
 /player playlists           재생목록 이름 목록
 /player search feather      보관함 + 카탈로그 순위 목록 (재생은 안 함)
 /player catalog feather     카탈로그 검색 결과 목록
-/player compact | normal    밴드 크기 (아래 참고, 기본 normal)
-/player close               밴드 닫기
+/player compact | normal    표시 방식 (아래 참고, 기본 compact)
+/player close               큰 밴드 닫기 (compact로)
 ```
 
 CLI 직접 사용: `player help`
@@ -97,7 +97,7 @@ player ui
 
 ### 프롬프트 위 플레이어 밴드 (function hooks mod)
 
-`hooks/register.tsx`는 Claude Code의 function-hooks 플러그인(공식 리포 `mods/`와 같은 방식)입니다. `/player`를 치면 프롬프트 바로 위에 밴드가 나타나고, 1초마다 Music.app을 폴링해 다시 그립니다. 버튼은 클릭 전용입니다.
+`hooks/register.tsx`는 Claude Code의 function-hooks 플러그인(공식 리포 `mods/`와 같은 방식)입니다. 재생 중이면 프롬프트 바로 아래 한 줄(compact)이 자동으로 뜨고, `/player`를 치면 프롬프트 위에 큰 밴드가 열립니다. 1초마다 Music.app을 폴링해 다시 그리며, 버튼은 클릭 전용입니다.
 
 왼쪽에 커버가 그려지고, 커버 높이만큼 남는 줄에 아티스트·앨범과 볼륨이 들어갑니다. 아트가 없는 곡은 같은 크기의 빈 판이 대신 들어가므로, 곡이 바뀌어도 밴드 높이와 텍스트 폭이 그대로입니다.
 
@@ -107,16 +107,16 @@ player ui
 
 | 모드 | 위치 | 커버 | 내용 |
 | --- | --- | --- | --- |
-| `compact` | 프롬프트 바로 아래 (푸터 첫 줄) | 없음 | 제목 · 아티스트, 진행 미터, 전송 버튼 |
-| `normal` (기본) | 프롬프트 **위** 밴드 (4줄) | 12×4 | 커버, 아티스트—앨범 줄, 셔플·볼륨 줄 |
+| `compact` (기본) | 프롬프트 바로 아래 (푸터 첫 줄) | 없음 | 제목 · 아티스트, 진행 미터, 전송 버튼 |
+| `normal` | 프롬프트 **위** 밴드 (4줄) | 12×4 | 커버, 아티스트—앨범 줄, 셔플·볼륨 줄 |
 
-`compact`는 재생 중이면 항상 떠 있습니다. 껐다 켤 것이 없으므로 `/player` 토글과 무관합니다.
+`compact`가 기본이자 평상시 상태입니다. **세션을 시작할 때 음악이 재생 중이면 명령 없이도 바로 뜹니다.** 자기 자리를 따로 차지하지 않으므로 끌 이유가 없고, 그래서 밴드를 닫으면 아무것도 없는 상태가 아니라 compact로 돌아갑니다.
+
+`/player`를 치면 위쪽 큰 밴드가 열리고, 다시 치면 닫혀 compact로 돌아옵니다. `/player compact`와 `/player normal`은 같은 것을 명시적으로 지정합니다.
 
 프롬프트 아래 푸터에는 렌더 자리가 둘 있는데 `SessionMode`(`auto mode on` 같은 모드 라벨)가 `PromptHint`(`? for shortcuts`)보다 **위**입니다. compact는 위쪽인 `SessionMode`에 그려서 프롬프트에 가장 가까이 붙고, 원래 모드 라벨은 그 아래에 그대로 다시 그립니다. Music.app이 멈추면 훅이 통과해 푸터가 원래대로 돌아갑니다.
 
-상태줄과 겹치지 않게, compact가 트랙을 보여주는 동안에는 상태줄 표시를 내보내지 않습니다.
-
-`normal`은 `/player`로 켜고 끄며, 꺼져 있는 동안에는 상태줄이 트랙을 대신 보여줍니다.
+겹쳐 보이지 않게, 트랙이 이미 화면에 그려져 있으면(compact든 열린 밴드든) 세션 상태줄에는 아무것도 내보내지 않습니다. `bin/player-statusline`(터미널 자체 상태줄)은 별개로 그대로 동작합니다.
 
 밴드의 각 줄은 터미널 오른쪽 끝까지 늘어나지 않고 커버 옆에 모여 있습니다. 150열에 걸쳐 좌우로 밀어놓으면 제목과 시간이 한 쌍으로 안 읽히고 밴드가 흩어진 조각처럼 보이기 때문입니다.
 
@@ -158,13 +158,7 @@ player ui
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/claude-mods
 ```
 
-```
-/player            밴드 켜기 · 끄기
-/player 밤편지      검색해서 재생 (밴드도 켜짐)
-/player close      밴드 끄기
-```
-
-밴드가 꺼져 있으면 프롬프트 아래 상태줄에 현재 곡 한 줄만 표시됩니다. 버튼은 마우스 클릭으로만 동작합니다 — 숫자 단축키는 입력창에 숫자를 칠 때 충돌해서 뺐습니다.
+버튼은 마우스 클릭으로만 동작합니다 — 숫자 단축키는 입력창에 숫자를 칠 때 충돌해서 뺐습니다.
 
 개발:
 

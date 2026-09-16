@@ -119,10 +119,46 @@ describe('player band', () => {
     await w.clock.settle()
     expect(w.runs[0]?.[0]).toMatch(/\/bin\/player$/)
     expect(verbs(w.runs)).toEqual(['status'])
-    expect(w.statuses.at(-1), 'the status row shows the track while the band is hidden').toContain('LOVE ATTACK')
+    // The session starts in compact, which draws the track in the footer, so
+    // the status row stays quiet rather than saying the same thing twice.
+    expect(w.statuses.at(-1), 'the footer already shows it').toBeUndefined()
+    const footer = JSON.stringify(await $.ui.render(FOOTER))
+    expect(footer, 'and it is there without a command being run').toContain('LOVE ATTACK')
   })
 
-  test('the band is not drawn until /player', async ($, on) => {
+  test('a session that starts with music playing shows it without a command', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const footer = JSON.stringify(await $.ui.render(FOOTER))
+    expect(footer, 'compact is the resting state, so nothing had to be run').toContain(
+      'LOVE ATTACK · 리센느',
+    )
+    expect(w.commands, 'and the only command is the one registered at startup').toEqual(['player'])
+  })
+
+  test('an idle player leaves the footer alone', async ($, on) => {
+    const w = world(on, '{"state":"stopped"}')
+    let engineDrew = false
+
+    on('ui.render', { component: 'SessionMode' }, ($, e) => {
+      engineDrew = true
+      const { Text } = $.ui.resolve(e)
+      return h(Text, {}, e.props.modes.join(' & ')) as RenderElement
+    })
+
+    await $.session.start(SESSION)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    await $.ui.render(FOOTER)
+    expect(engineDrew, 'nothing playing means nothing to say').toBe(true)
+  })
+
+  test('the full band is not drawn until /player', async ($, on) => {
     const w = world(on)
     let engineDrew = false
 
@@ -338,7 +374,7 @@ describe('player band', () => {
     expect(volumeRun?.[2]).toBe('95')
   })
 
-  test('/player <song> plays it and /player again hides the band', async ($, on) => {
+  test('/player <song> plays it, and bare /player opens and closes the band', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -352,9 +388,18 @@ describe('player band', () => {
     await w.clock.settle()
     expect(missing.text).toContain('no match')
 
-    const hidden = await $.command.run(player())
-    expect(hidden.text, 'hiding says nothing; the status row takes over').toBeUndefined()
-    expect(w.statuses.at(-1)).toContain('LOVE ATTACK')
+    // From compact, bare `/player` opens the full band above the prompt...
+    const opened = await $.command.run(player())
+    await w.clock.settle()
+    expect(opened.text, 'the band itself is the answer').toBeUndefined()
+    expect(JSON.stringify(await $.ui.render(BAND))).toContain('LOVE ATTACK')
+
+    // ...and again closes it, falling back to compact rather than to nothing.
+    const closed = await $.command.run(player())
+    await w.clock.settle()
+    expect(closed.text).toBeUndefined()
+    expect(JSON.stringify(await $.ui.render(FOOTER)), 'compact is the resting state')
+      .toContain('LOVE ATTACK')
   })
 
   test('a song outside the library says where it went', async ($, on) => {
@@ -551,20 +596,32 @@ describe('player band', () => {
     expect(w.runs.some(a => a[1] === 'play' && a[2] === 'full')).toBe(true)
   })
 
-  test('the status row carries a meter while the band is hidden', async ($, on) => {
+  test('the status row never doubles what the band already shows', async ($, on) => {
+    // Compact draws the track in the footer and normal draws it above the
+    // prompt, and closing the band falls back to compact rather than to
+    // nothing — so there is no state in which both speak at once.
     const w = world(on)
 
     await $.session.start(SESSION)
     await w.clock.advance(1000)
     await w.clock.settle()
+    expect(w.statuses.at(-1), 'compact has it').toBeUndefined()
 
-    const line = w.statuses.at(-1) ?? ''
-    expect(line, 'the hidden row is the only place the track shows').toContain('LOVE ATTACK')
-    expect(line, 'so it gets a meter as well as the clock').toContain('█')
-    expect(line).toContain('1:22/3:01')
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect(w.statuses.at(-1), 'and so does the open band').toBeUndefined()
+
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect(w.statuses.at(-1), 'closing returns to compact, which still has it').toBeUndefined()
   })
 
+
   test('a track with no artist leaves out the separator', async ($, on) => {
+    // Compact joins the title and artist with ` · `, so a track the CLI
+    // reports without an artist must not be left with a dangling separator.
     const bare = JSON.stringify({ ...JSON.parse(PLAYING), artist: '' })
     const w = world(on, bare)
 
@@ -572,9 +629,9 @@ describe('player band', () => {
     await w.clock.advance(1000)
     await w.clock.settle()
 
-    expect(w.statuses.at(-1), 'a dangling " · " reads as a missing word').not.toContain(
-      'LOVE ATTACK ·',
-    )
+    const footer = JSON.stringify(await $.ui.render(FOOTER))
+    expect(footer, 'the title is still there').toContain('LOVE ATTACK')
+    expect(footer, 'a dangling " · " reads as a missing word').not.toContain('LOVE ATTACK ·')
   })
 
   test('idle Music.app says so', async ($, on) => {
