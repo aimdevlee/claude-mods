@@ -18,8 +18,7 @@ usage: player <command> [args]
   volume [0-100]      get or set volume
   shuffle [on|off]    get or set shuffle
   repeat [off|one|all]
-  now                 draw the player screen for the current track (add "demo" for a sample)
-  ui                  resident player: live screen with keyboard control (q to quit)
+  now                 print the current track as one line
   status              print machine-readable state (JSON)
   art [size]          current artwork as terminal Raster cells (JSON), cached per track
   search <query>      rank library + catalog matches without playing
@@ -58,11 +57,6 @@ tell application "Music"
   return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"}"
 end tell
 AS
-}
-
-now() {
-  if [[ "${1:-}" == "demo" ]]; then "$(dirname "$0")/player-ui" --once demo
-  else "$(dirname "$0")/player-ui" --once; fi
 }
 
 search_library() {
@@ -177,6 +171,29 @@ open_in_music() {
 
 art() { "$(dirname "$0")/player-art" "${1:-12}"; }
 
+# One line for the current track: the confirmation printed after a transport
+# verb, and the default command. The band and the status line render themselves
+# from `status`; this is only for a human reading the CLI's own output.
+now() {
+  track_json | python3 -c '
+import json, sys
+t = json.load(sys.stdin)
+title = t.get("title")
+if t.get("state") == "stopped" or not title:
+    print("nothing playing")
+    raise SystemExit
+icon = {"playing": "\u25b6", "paused": "\u2016"}.get(t["state"], "\u25a0")
+def mmss(s):
+    s = int(s or 0)
+    return "%d:%02d" % (s // 60, s % 60)
+by = " \u2014 ".join(x for x in (t.get("artist"), t.get("album")) if x)
+line = icon + " " + title
+if by:
+    line += "  \u00b7  " + by
+print(line + "  " + mmss(t.get("position")) + "/" + mmss(t.get("duration")))
+'
+}
+
 cmd="${1:-now}"; shift || true
 case "$cmd" in
   play)
@@ -231,8 +248,7 @@ case "$cmd" in
   volume)    if [[ $# -eq 0 ]]; then music "sound volume"; else music "set sound volume to $1"; fi ;;
   shuffle)   case "${1:-}" in on) music "set shuffle enabled to true";; off) music "set shuffle enabled to false";; *) music "shuffle enabled";; esac ;;
   repeat)    if [[ $# -eq 0 ]]; then music "song repeat as text"; else music "set song repeat to $1"; fi ;;
-  now)       now "${1:-}" ;;
-  ui)        exec "$(dirname "$0")/player-ui" ;;
+  now)       now ;;
   status)    track_json; echo ;;
   art)       art "${1:-12}" ;;
   search)    "$(dirname "$0")/player-search" "$*" ;;
