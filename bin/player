@@ -47,6 +47,22 @@ tell application "Music"
     set currentVolume to sound volume
     set shuffleOn to shuffle enabled
     set repeatMode to song repeat as text
+    -- Extras the full-size band shows. A streaming track leaves most of these
+    -- empty or zero (an Apple Music URL track reports year 0 and no play
+    -- count), so each is emitted only when it actually holds something and the
+    -- band simply omits what is missing.
+    set trackGenre to ""
+    set trackYear to 0
+    set trackPlays to 0
+    try
+      set trackGenre to genre of theTrack
+    end try
+    try
+      set trackYear to year of theTrack
+    end try
+    try
+      set trackPlays to played count of theTrack
+    end try
   on error
     return "{\"state\":\"" & playerState & "\"}"
   end try
@@ -54,8 +70,13 @@ tell application "Music"
   set trackTitle to (text items of trackTitle) as text
   set trackArtist to (text items of trackArtist) as text
   set trackAlbum to (text items of trackAlbum) as text
+  set trackGenre to (text items of trackGenre) as text
   set AppleScript's text item delimiters to ""
-  return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"}"
+  set extras to ""
+  if trackGenre is not "" then set extras to extras & ",\"genre\":\"" & trackGenre & "\""
+  if trackYear > 0 then set extras to extras & ",\"year\":" & trackYear
+  if trackPlays > 0 then set extras to extras & ",\"plays\":" & trackPlays
+  return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"" & extras & "}"
 end tell
 AS
 }

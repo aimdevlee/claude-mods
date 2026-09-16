@@ -13,6 +13,9 @@ const PLAYING = JSON.stringify({
   volume: 100,
   shuffle: false,
   repeat: 'off',
+  genre: 'K-Pop',
+  year: 2019,
+  plays: 12,
 })
 
 const BAND: RenderInput<'AbovePrompt'> = {
@@ -406,12 +409,54 @@ describe('player band', () => {
     await w.clock.settle()
 
     const artRun = w.runs.find(argv => argv[1] === 'art')
-    expect(artRun?.[2], 'full asks for a twenty-eight-column cover').toBe('28')
+    expect(artRun?.[2], 'full asks for a thirty-six-column cover').toBe('36')
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
     expect(drawn, 'full draws a border').toContain('"borderStyle":"round"')
     expect(drawn, 'and titles it').toContain('APPLE MUSIC')
     expect(drawn, 'the byline stays').toContain('리센느 — SCENEDROME - EP')
+    expect(drawn, 'and full adds the extras the other modes have no room for')
+      .toContain('K-Pop · 2019 · ♥ 12회 재생')
+  })
+
+  test('full shows only the extras Music.app actually reported', async ($, on) => {
+    // A streaming track answers with a genre and nothing else — the CLI omits
+    // the keys rather than sending zeroes, so the row must not print "0년" or
+    // an empty play count beside it.
+    const streaming = JSON.stringify({
+      ...JSON.parse(PLAYING),
+      genre: 'K-Pop',
+      year: undefined,
+      plays: undefined,
+    })
+    const w = world(on, streaming)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('full'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'the genre is what a streaming track has').toContain('K-Pop')
+    expect(drawn, 'a missing year must not print as a zero').not.toContain('0년')
+    expect(drawn, 'nor a missing play count as an empty heart').not.toContain('♥')
+  })
+
+  test('a track with no extras at all drops the row instead of drawing it blank', async ($, on) => {
+    const { genre, year, plays, ...bare } = JSON.parse(PLAYING)
+    const w = world(on, JSON.stringify(bare))
+
+    await $.session.start(SESSION)
+    await $.command.run(player('full'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    // Nothing to say, so full has normal's rows plus its frame — and no blank
+    // line, and no separator left stranded where the extras would have gone.
+    expect(drawn).not.toContain('K-Pop')
+    expect(drawn).not.toContain(' · ')
+    expect(drawn, 'the band still draws').toContain('LOVE ATTACK')
   })
 
   test('changing density re-exports the cover at the new width', async ($, on) => {

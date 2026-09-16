@@ -43,6 +43,11 @@ const LISTING = new Set(['search', 'search-library', 'catalog', 'playlists', 'op
  * The three densities. `art` is the cover's width in columns; `bin/player art`
  * derives the height from it (it keeps the cover square on screen), and `rows`
  * records what it answers, so the plate drawn for a coverless track matches.
+ *
+ * `rows` is therefore not free: it is `bin/player-art`'s own arithmetic, and a
+ * value that disagrees makes a coverless track a different height from a
+ * covered one. Measured, not guessed — 12→2, 20→4, 36→7. Changing `art` means
+ * re-running `player art <n>` and copying the row count it answers.
  * `meter` is the position bar's width, and `volumeMeter` the volume's; 0 means
  * the mode leaves that bar out and prints only the numbers.
  */
@@ -52,14 +57,15 @@ export const DENSITIES: Record<Density, {
   art: number
   rows: number
   byline: boolean
+  meta: boolean
   modes: boolean
   frame: boolean
   meter: number
   volumeMeter: number
 }> = {
-  compact: { art: 12, rows: 2, byline: false, modes: false, frame: false, meter: 12, volumeMeter: 0 },
-  normal: { art: 20, rows: 4, byline: true, modes: true, frame: false, meter: 16, volumeMeter: 8 },
-  full: { art: 28, rows: 6, byline: true, modes: true, frame: true, meter: 24, volumeMeter: 10 },
+  compact: { art: 12, rows: 2, byline: false, meta: false, modes: false, frame: false, meter: 12, volumeMeter: 0 },
+  normal: { art: 20, rows: 4, byline: true, meta: false, modes: true, frame: false, meter: 16, volumeMeter: 8 },
+  full: { art: 36, rows: 7, byline: true, meta: true, modes: true, frame: true, meter: 24, volumeMeter: 10 },
 }
 
 const DEFAULT_DENSITY: Density = 'normal'
@@ -75,6 +81,12 @@ type Track = {
   volume?: number
   shuffle?: boolean
   repeat?: string
+  // Extras the CLI emits only when the track actually carries them: a
+  // streaming track usually has a genre and nothing else, a ripped one has all
+  // three. The full-size band shows what arrived and omits the rest.
+  genre?: string
+  year?: number
+  plays?: number
 }
 
 type Host = {
@@ -236,6 +248,23 @@ export function bylineOf(track: Track): string {
 }
 
 /**
+ * The extras row full mode adds: genre, year and play count, whichever of them
+ * Music.app reported. A streaming track usually answers with the genre alone,
+ * so this is often one word — and empty when it is not even that, in which
+ * case the caller drops the row rather than drawing a blank one.
+ */
+export function metaLineOf(track: Track): string {
+  const plays = track.plays ?? 0
+  return [
+    track.genre,
+    track.year !== undefined && track.year > 0 ? String(track.year) : '',
+    plays > 0 ? `♥ ${plays}회 재생` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/**
  * The rows that fill the cover's height beside it. Which ones appear is the
  * mode's call: compact has room for neither, so the artist rides the track row
  * instead, while normal and full give the byline and the modes-and-volume row
@@ -252,6 +281,10 @@ export function detailRowsOf(
   if (mode.byline) {
     const byline = bylineOf(track)
     if (byline !== '') rows.push({ left: clip(byline, Math.max(10, columns - 2)), right: '' })
+  }
+  if (mode.meta) {
+    const meta = metaLineOf(track)
+    if (meta !== '') rows.push({ left: clip(meta, Math.max(10, columns - 2)), right: '' })
   }
   if (mode.modes) {
     const volume = track.volume ?? 0
