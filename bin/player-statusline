@@ -17,7 +17,15 @@ if "title" not in d:
 i = {"playing": "▶", "paused": "‖"}.get(st, "■")
 def mmss(s):
     s = int(s); return f"{s//60}:{s%60:02d}"
-print(f"🎵 {i} {d['title']} · {d['artist']} {mmss(d['position'])}/{mmss(d['duration'])}")
+# Same shape as the band's own hidden-state row (statusLineOf in
+# hooks/register.tsx): a short meter as well as the clock, and no dangling
+# separator when the CLI reports no artist.
+pos, dur = d.get("position", 0), d.get("duration", 0)
+name = " · ".join(x for x in (d.get("title"), d.get("artist")) if x)
+w = 8
+filled = max(0, min(w, round(w * pos / dur))) if dur else 0
+meter = "█" * filled + "░" * (w - filled)
+print(f"🎵 {i} {name}  {meter} {mmss(pos)}/{mmss(dur)}")
 PY
 )"
 printf '%s%s\n' "${model:+$model  }" "$tape"

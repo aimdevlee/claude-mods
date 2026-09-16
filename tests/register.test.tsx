@@ -192,7 +192,9 @@ describe('player band', () => {
     // The volume meter sits immediately before its label, so match the pair:
     // the position meter's own run of shade would otherwise satisfy this.
     expect(drawn, 'a NaN ratio must not collapse the meter and shift the row').toContain(
-      `${'░'.repeat(10)} vol`,
+      // Eight is `DENSITIES.normal.volumeMeter`; the hooks module is loaded by
+      // the harness rather than imported, so the width is spelled out here.
+      `${'░'.repeat(8)} vol`,
     )
   })
 
@@ -373,6 +375,95 @@ describe('player band', () => {
     await w.clock.settle()
 
     expect(text).toContain('ambiguous')
+  })
+
+  test('/player compact draws the small band and moves the artist up a row', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    const { text } = await $.command.run(player('compact'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    expect(text, 'the band redrawing is the answer, as with the toggle').toBeUndefined()
+    const artRun = w.runs.find(argv => argv[1] === 'art')
+    expect(artRun?.[2], 'compact asks for a twelve-column cover').toBe('12')
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'with no byline row the artist rides the track row').toContain(
+      'LOVE ATTACK · 리센느',
+    )
+    expect(drawn, 'the album is what compact drops').not.toContain('SCENEDROME')
+    expect(drawn, 'and so is the volume row').not.toContain('vol 100')
+  })
+
+  test('/player full frames the band and asks for a bigger cover', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('full'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const artRun = w.runs.find(argv => argv[1] === 'art')
+    expect(artRun?.[2], 'full asks for a twenty-eight-column cover').toBe('28')
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'full draws a border').toContain('"borderStyle":"round"')
+    expect(drawn, 'and titles it').toContain('APPLE MUSIC')
+    expect(drawn, 'the byline stays').toContain('리센느 — SCENEDROME - EP')
+  })
+
+  test('changing density re-exports the cover at the new width', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    await $.command.run(player('compact'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const widths = w.runs.filter(a => a[1] === 'art').map(a => a[2])
+    expect(widths, 'the track never changed, but the mode did').toEqual(['20', '12'])
+  })
+
+  test('a density word is not played as a song', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('full'))
+    await w.clock.settle()
+
+    expect(verbs(w.runs), 'there is no song called "full" to search for').not.toContain('play')
+  })
+
+  test('the status row carries a meter while the band is hidden', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const line = w.statuses.at(-1) ?? ''
+    expect(line, 'the hidden row is the only place the track shows').toContain('LOVE ATTACK')
+    expect(line, 'so it gets a meter as well as the clock').toContain('█')
+    expect(line).toContain('1:22/3:01')
+  })
+
+  test('a track with no artist leaves out the separator', async ($, on) => {
+    const bare = JSON.stringify({ ...JSON.parse(PLAYING), artist: '' })
+    const w = world(on, bare)
+
+    await $.session.start(SESSION)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    expect(w.statuses.at(-1), 'a dangling " · " reads as a missing word').not.toContain(
+      'LOVE ATTACK ·',
+    )
   })
 
   test('idle Music.app says so', async ($, on) => {

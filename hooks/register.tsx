@@ -10,11 +10,17 @@ import type { EngineInterface, Register } from 'claude-code'
  * `bin/player status` and redraws. The transport Buttons are click-only — no
  * hotkeys, so typing digits into the composer stays typing digits.
  *
- * The band is four rows: a 20x4 Raster of the cover on the left (a 2x2 pixel
- * block per terminal cell, via the quadrant blocks), and beside it the track
- * line, the byline, the volume and the buttons — the cover's height is the
- * band's, so those rows fill it. A track with no artwork gets a plate of the
- * same size, so the band never changes height between songs.
+ * The band draws at one of three densities, chosen with `/player compact`,
+ * `/player normal` or `/player full` and remembered for the session:
+ *
+ *   compact  3 rows, a 12x2 cover — the track, a meter, one row of buttons
+ *   normal   5 rows, a 20x4 cover — adds the byline and the volume (default)
+ *   full     7 rows, a 28x6 cover — adds a framed header and the mode row
+ *
+ * In every mode a Raster of the cover sits on the left (a 2x2 pixel block per
+ * terminal cell, via the quadrant blocks) and the text rows fill its height
+ * beside it. A track with no artwork gets a plate of the same size, so the band
+ * never changes height between songs.
  * Music.app stays the player: this band is its remote.
  */
 
@@ -32,8 +38,32 @@ const TRANSPORT = new Set([
   'seek', 'volume', 'shuffle', 'repeat', 'playlist',
 ])
 const LISTING = new Set(['search', 'search-library', 'catalog', 'playlists', 'open'])
-const ART_COLUMNS = 20
-const ART_ROWS = 4
+
+/**
+ * The three densities. `art` is the cover's width in columns; `bin/player art`
+ * derives the height from it (it keeps the cover square on screen), and `rows`
+ * records what it answers, so the plate drawn for a coverless track matches.
+ * `meter` is the position bar's width, and `volumeMeter` the volume's; 0 means
+ * the mode leaves that bar out and prints only the numbers.
+ */
+export type Density = 'compact' | 'normal' | 'full'
+
+export const DENSITIES: Record<Density, {
+  art: number
+  rows: number
+  byline: boolean
+  modes: boolean
+  frame: boolean
+  meter: number
+  volumeMeter: number
+}> = {
+  compact: { art: 12, rows: 2, byline: false, modes: false, frame: false, meter: 12, volumeMeter: 0 },
+  normal: { art: 20, rows: 4, byline: true, modes: true, frame: false, meter: 16, volumeMeter: 8 },
+  full: { art: 28, rows: 6, byline: true, modes: true, frame: true, meter: 24, volumeMeter: 10 },
+}
+
+const DEFAULT_DENSITY: Density = 'normal'
+const isDensity = (word: string): word is Density => word in DENSITIES
 
 type Track = {
   state: 'playing' | 'paused' | 'stopped'
@@ -169,46 +199,90 @@ export function meterOf(fraction: number, width: number): string {
   return '█'.repeat(filled) + '░'.repeat(width - filled)
 }
 
-/** The band's first row: what plays, and where it is, fitted to `columns`. */
-export function trackLineOf(track: Track, columns: number): { left: string; right: string } {
+/**
+ * The band's first row: what plays, and where it is, fitted to `columns`.
+ *
+ * The position bar is the mode's width, shrunk to what the row can spare and
+ * dropped entirely when fewer than six columns are left for it — a narrow
+ * terminal keeps the title and the clock, which are the row's point.
+ */
+export function trackLineOf(
+  track: Track,
+  columns: number,
+  density: Density = DEFAULT_DENSITY,
+): { left: string; right: string } {
   if (track.title === undefined) {
     return { left: '■ Apple Music: nothing playing', right: '' }
   }
   const position = track.position ?? 0
   const duration = track.duration ?? 0
-  const barWidth = columns >= 100 ? 20 : columns >= 70 ? 12 : 0
-  const bar = barWidth > 0 ? `${meterOf(duration > 0 ? position / duration : 0, barWidth)} ` : ''
-  const right = `${bar}${mmss(position)} / ${mmss(duration)}`
-  const left = clip(
-    `${iconOf(track)} ${track.title}`,
-    Math.max(10, columns - widthOf(right) - 2),
-  )
+  const clock = `${mmss(position)} / ${mmss(duration)}`
+  // Compact has no byline row, so the artist rides here or goes unsaid.
+  const name = DENSITIES[density].byline
+    ? track.title
+    : [track.title, track.artist].filter(Boolean).join(' · ')
+  const title = `${iconOf(track)} ${name}`
+  const spare = columns - widthOf(clock) - widthOf(title) - 3
+  const barWidth = Math.min(DENSITIES[density].meter, Math.max(0, spare))
+  const bar = barWidth >= 6 ? `${meterOf(duration > 0 ? position / duration : 0, barWidth)} ` : ''
+  const right = `${bar}${clock}`
+  const left = clip(title, Math.max(10, columns - widthOf(right) - 2))
   return { left, right }
 }
 
+/** `artist — album`, the pair that names a track apart from its title. */
+export function bylineOf(track: Track): string {
+  return [track.artist, track.album].filter(Boolean).join(' — ')
+}
+
 /**
- * The rows that fill the cover's height beside it: the artist and album get a
- * line of their own now that the title no longer shares one, and the volume
- * gets the same meter the position has.
+ * The rows that fill the cover's height beside it. Which ones appear is the
+ * mode's call: compact has room for neither, so the artist rides the track row
+ * instead, while normal and full give the byline and the modes-and-volume row
+ * a line each.
  */
-export function detailRowsOf(track: Track, columns: number): { left: string; right: string }[] {
+export function detailRowsOf(
+  track: Track,
+  columns: number,
+  density: Density = DEFAULT_DENSITY,
+): { left: string; right: string }[] {
   if (track.title === undefined) return []
+  const mode = DENSITIES[density]
   const rows: { left: string; right: string }[] = []
-  const byline = [track.artist, track.album].filter(Boolean).join(' — ')
-  if (byline !== '') rows.push({ left: clip(byline, Math.max(10, columns - 2)), right: '' })
-  const volume = track.volume ?? 0
-  const meter = columns >= 70 ? `${meterOf(volume / 100, 10)} ` : ''
-  const modes = [track.shuffle ? 'shuffle' : '', track.repeat && track.repeat !== 'off' ? `repeat ${track.repeat}` : '']
-    .filter(Boolean)
-    .join('  ')
-  rows.push({ left: modes, right: `${meter}vol ${volume}` })
+  if (mode.byline) {
+    const byline = bylineOf(track)
+    if (byline !== '') rows.push({ left: clip(byline, Math.max(10, columns - 2)), right: '' })
+  }
+  if (mode.modes) {
+    const volume = track.volume ?? 0
+    const width = mode.volumeMeter
+    // The volume bar is worth its room only once the row has some; below that
+    // the number alone says it, and the modes keep the left of the row.
+    const meter = width > 0 && columns >= 60 ? `${meterOf(volume / 100, width)} ` : ''
+    const modes = [
+      track.shuffle ? 'shuffle' : '',
+      track.repeat && track.repeat !== 'off' ? `repeat ${track.repeat}` : '',
+    ]
+      .filter(Boolean)
+      .join('  ')
+    rows.push({ left: modes, right: `${meter}vol ${volume}` })
+  }
   return rows
 }
 
-/** One line for the status row under the prompt while the band is hidden. */
+/**
+ * One line for the status row under the prompt while the band is hidden — the
+ * only place the track shows then, so it carries a short meter as well as the
+ * clock. An artist the CLI did not report leaves out its separator instead of
+ * printing a dangling one.
+ */
 export function statusLineOf(track: Track): string | undefined {
   if (track.title === undefined) return undefined
-  return `🎵 ${iconOf(track)} ${track.title} · ${track.artist ?? ''} ${mmss(track.position ?? 0)}/${mmss(track.duration ?? 0)}`
+  const position = track.position ?? 0
+  const duration = track.duration ?? 0
+  const name = [track.title, track.artist].filter(Boolean).join(' · ')
+  const meter = meterOf(duration > 0 ? position / duration : 0, 8)
+  return `🎵 ${iconOf(track)} ${name}  ${meter} ${mmss(position)}/${mmss(duration)}`
 }
 
 export const register: Register = on => {
@@ -219,10 +293,14 @@ export const register: Register = on => {
   let isShown = false
   let note: string | undefined
   let isPolling = false
+  let density: Density = DEFAULT_DENSITY
 
-  /** What identifies a cover: re-export only when the track itself changes. */
+  /**
+   * What identifies a cover: re-export only when the track itself changes —
+   * or when the mode does, since each density asks for its own width.
+   */
   const artKeyOf = (t: Track) =>
-    t.title === undefined ? undefined : `${t.title}|${t.album ?? ''}`
+    t.title === undefined ? undefined : `${t.title}|${t.album ?? ''}|${density}`
 
   async function poll(engine: Host) {
     if (isPolling) return
@@ -243,7 +321,7 @@ export const register: Register = on => {
         artOf = undefined
       } else if (isShown && key !== artOf) {
         artOf = key
-        art = parseArt(await engine.run('art', String(ART_COLUMNS)))
+        art = parseArt(await engine.run('art', String(DENSITIES[density].art)))
         artChanged = true
       }
 
@@ -284,8 +362,8 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description:
-        'Apple Music above the prompt: /player toggles the band, /player <song> plays it, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
-      argumentHint: '[song | pause | next | search <song> | playlist <name> | close]',
+        'Apple Music above the prompt: /player toggles the band, /player <song> plays it, compact | normal | full set how much the band draws, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
+      argumentHint: '[song | pause | next | compact | full | search <song> | playlist <name> | close]',
     })
     const engine = host
     engine.every(POLL_MS, () => {
@@ -304,6 +382,18 @@ export const register: Register = on => {
       engine.status(statusLineOf(track))
       // Silent: the band appearing or leaving is the answer, and a line per
       // toggle buries the transcript (the status row carries it while hidden).
+      return {}
+    }
+    // A density word sets how the band draws and shows it, which is the whole
+    // answer — so nothing is printed, as with the toggle. The cover is the one
+    // thing that cannot just be re-laid out: the new mode wants its own width,
+    // so the poll re-exports it (`artKeyOf` carries the mode for that reason).
+    if (isDensity(query)) {
+      density = query
+      isShown = true
+      engine.status(undefined)
+      engine.invalidate()
+      void poll(engine).catch(() => undefined)
       return {}
     }
     // Bare `open`/`on` shows the band; `open <song>` is the CLI's own verb.
@@ -340,28 +430,67 @@ export const register: Register = on => {
     const engine = host
     if (!engine || !isShown || e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
+    const mode = DENSITIES[density]
     // Leave the right edge to the engine's collapse mark (`[-]`).
     const outer = Math.max(20, e.props.bodyColumns - 6)
     // A coverless track gets a plate the same size, so the band does not
     // change height or reflow as the artwork comes and goes between songs.
-    const cover = art ?? placeholderArt(ART_COLUMNS, ART_ROWS)
+    const cover = art ?? placeholderArt(mode.art, mode.rows)
     // The art takes its columns plus a gap; the text rows get what is left.
-    const columns = Math.max(20, outer - cover.columns - 2)
-    const { left, right } = trackLineOf(track, columns)
+    // A frame spends two more columns on its border and padding.
+    const columns = Math.max(20, outer - cover.columns - 2 - (mode.frame ? 4 : 0))
+    const { left, right } = trackLineOf(track, columns, density)
     const volume = track.volume ?? 50
     const press = (...args: string[]) => () => {
       void act(engine, ...args).catch(() => undefined)
     }
     // Click-only: no hotkeys, so digits typed into the composer stay digits.
-    const key = (name: string, label: string, ...args: string[]) => (
-      <Button key={name} onPress={press(...args)}>
-        {label}
-      </Button>
-    )
+    // Every transport label is a glyph of the same family, so the row reads as
+    // one control strip rather than icons and words side by side; a mode that
+    // is on is marked by colour, not by the label growing and shifting the row.
+    const key = (name: string, label: string, opts: { on?: boolean } = {}) =>
+      (...args: string[]) => (
+        <Button key={name} color={opts.on === true ? 'success' : undefined} onPress={press(...args)}>
+          {label}
+        </Button>
+      )
 
     // The band is as tall as the art, so the extra rows carry the byline and
     // the volume instead of sitting empty.
-    const details = detailRowsOf(track, columns)
+    const details = detailRowsOf(track, columns, density)
+    const repeats = { off: 'all', all: 'one', one: 'off' } as const
+    const repeat = track.repeat === 'all' || track.repeat === 'one' ? track.repeat : 'off'
+
+    const buttons = (
+      <Box gap={1}>
+        {key('prev', '⏮')('prev')}
+        {key('play', track.state === 'playing' ? '⏸' : '▶')('toggle')}
+        {key('next', '⏭')('next')}
+        {key('vol-', '−')('volume', String(Math.max(0, volume - 5)))}
+        {key('vol+', '＋')('volume', String(Math.min(100, volume + 5)))}
+        {key('shuffle', '⤨', { on: track.shuffle === true })(
+          'shuffle',
+          track.shuffle === true ? 'off' : 'on',
+        )}
+        {mode.modes
+          ? key('repeat', repeat === 'one' ? '🔂' : '🔁', { on: repeat !== 'off' })(
+              'repeat',
+              repeats[repeat],
+            )
+          : null}
+        <Button
+          key="close"
+          dimColor
+          onPress={() => {
+            isShown = false
+            engine.invalidate()
+            engine.status(statusLineOf(track))
+          }}
+        >
+          ✕
+        </Button>
+      </Box>
+    )
 
     const body = (
       <Box flexDirection="column" width={columns}>
@@ -375,30 +504,28 @@ export const register: Register = on => {
             <Text dimColor>{row.right}</Text>
           </Box>
         ))}
-        <Box gap={1}>
-          {key('prev', '⏮', 'prev')}
-          {key('play', track.state === 'playing' ? '⏸' : '▶', 'toggle')}
-          {key('next', '⏭', 'next')}
-          {key('vol-', 'vol−', 'volume', String(Math.max(0, volume - 5)))}
-          {key('vol+', 'vol+', 'volume', String(Math.min(100, volume + 5)))}
-          {key('shuffle', track.shuffle ? 'shuffle on' : 'shuffle', 'shuffle', track.shuffle ? 'off' : 'on')}
-          <Button key="close" dimColor onPress={() => { isShown = false; engine.invalidate(); engine.status(statusLineOf(track)) }}>
-            hide
-          </Button>
-        </Box>
+        {buttons}
         {note !== undefined ? <Text color="warning">{note}</Text> : null}
       </Box>
     )
 
-    return (
-      <Box width={outer} paddingX={1} gap={1}>
-        <Raster
-          key="cover"
-          columns={cover.columns}
-          rows={cover.rows}
-          cells={cover.cells}
-        />
+    const band = (
+      <Box width={mode.frame ? undefined : outer} paddingX={1} gap={1}>
+        <Raster key="cover" columns={cover.columns} rows={cover.rows} cells={cover.cells} />
         {body}
+      </Box>
+    )
+
+    // Full mode spends its extra rows on a border and a title, which is what
+    // makes it read as a device rather than as a line of text with a picture.
+    if (!mode.frame) return band
+
+    return (
+      <Box width={outer} flexDirection="column" borderStyle="round" borderDimColor>
+        <Box paddingX={1}>
+          <Text dimColor>APPLE MUSIC</Text>
+        </Box>
+        {band}
       </Box>
     )
   })
