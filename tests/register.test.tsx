@@ -30,6 +30,15 @@ const BAND: RenderInput<'AbovePrompt'> = {
   },
 }
 
+/** The hint line under the prompt, where compact draws. */
+const HINT: RenderInput<'PromptHint'> = {
+  component: 'PromptHint',
+  surface: 'terminal',
+  requestId: 'prompt-hint',
+  viewport: { columns: 160, rows: 40 },
+  props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
+}
+
 const SESSION = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
 
 const player = (args = '') =>
@@ -409,7 +418,7 @@ describe('player band', () => {
     expect(text).toContain('ambiguous')
   })
 
-  test('/player compact draws one line with no cover', async ($, on) => {
+  test('/player compact draws on the hint line, not above the prompt', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -421,13 +430,31 @@ describe('player band', () => {
     expect(verbs(w.runs), 'a one-line band has no height to hang a cover on')
       .not.toContain('art')
 
-    const drawn = JSON.stringify(await $.ui.render(BAND))
-    expect(drawn, 'no cover is exported, so none is drawn').not.toContain('Raster')
-    expect(drawn, 'with no byline row the artist rides the track row').toContain(
+    const hint = JSON.stringify(await $.ui.render(HINT))
+    expect(hint, 'no cover is exported, so none is drawn').not.toContain('Raster')
+    expect(hint, 'with no byline row the artist rides the track row').toContain(
       'LOVE ATTACK · 리센느',
     )
-    expect(drawn, 'the album is what compact drops').not.toContain('SCENEDROME')
-    expect(drawn, 'and so is the volume row').not.toContain('vol 100')
+    expect(hint, 'the album is what compact drops').not.toContain('SCENEDROME')
+    expect(hint, 'and so is the volume').not.toContain('vol 100')
+  })
+
+  test('compact leaves the band above the prompt to normal', async ($, on) => {
+    const w = world(on)
+    let engineDrew = false
+
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+      engineDrew = true
+      const { Text } = $.ui.resolve(e)
+      return h(Text, {}, 'beneath') as RenderElement
+    })
+
+    await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.settle()
+
+    await $.ui.render(BAND)
+    expect(engineDrew, 'compact draws under the prompt, so the band is free').toBe(true)
   })
 
   test('compact keeps the transport and drops the rest of the buttons', async ($, on) => {
@@ -437,15 +464,35 @@ describe('player band', () => {
     await $.command.run(player('compact'))
     await w.clock.settle()
 
-    const drawn = JSON.stringify(await $.ui.render(BAND))
-    for (const key of ['prev', 'play', 'next', 'close']) {
-      expect(drawn, `compact keeps ${key}`).toContain(`"key":"${key}"`)
+    const hint = JSON.stringify(await $.ui.render(HINT))
+    for (const key of ['prev', 'play', 'next']) {
+      expect(hint, `compact keeps ${key}`).toContain(`"key":"${key}"`)
     }
     // Volume, shuffle and repeat are a `/player` command away, and would crowd
-    // the single row they would have to share with the title.
-    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat']) {
-      expect(drawn, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
+    // the single row they would have to share with the title. Hide goes too:
+    // the hint line is the engine's own, and compact hands it back by itself
+    // when nothing plays.
+    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat', 'close']) {
+      expect(hint, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
     }
+  })
+
+  test('compact hands the hint line back when nothing is playing', async ($, on) => {
+    const w = world(on, '{"state":"stopped"}')
+    let engineDrew = false
+
+    on('ui.render', { component: 'PromptHint' }, ($, e) => {
+      engineDrew = true
+      const { Text } = $.ui.resolve(e)
+      return h(Text, {}, e.props.hint) as RenderElement
+    })
+
+    await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.settle()
+
+    await $.ui.render(HINT)
+    expect(engineDrew, 'the shortcuts are not lost to a band with nothing to say').toBe(true)
   })
 
   test('leaving compact exports the cover the wider band needs', async ($, on) => {

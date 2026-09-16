@@ -11,10 +11,16 @@ import type { EngineInterface, Register } from 'claude-code'
  * hotkeys, so typing digits into the composer stays typing digits.
  *
  * The band draws at one of two densities, chosen with `/player compact` or
- * `/player normal` and remembered for the session:
+ * `/player normal` and remembered for the session. They draw in different
+ * places, which is the point of the split:
  *
- *   compact  1 row, no cover — the track, a meter, and the transport buttons
- *   normal   4 rows, a 20x4 cover — adds the byline and the volume (default)
+ *   compact  the hint line under the prompt — the track, a meter, transport.
+ *            Always there while something plays, so there is nothing to toggle
+ *            and no cover; it replaces `? for shortcuts` and hands that line
+ *            back when Music.app goes idle.
+ *   normal   the band above the prompt (default) — 4 rows beside a 12x4 cover,
+ *            adding the byline, the volume and the mode buttons. `/player`
+ *            toggles it, and the status row carries the track while it is down.
  *
  * In normal a Raster of the cover sits on the left (a 2x2 pixel block per
  * terminal cell, via the quadrant blocks) and the text rows fill its height
@@ -61,13 +67,19 @@ export const DENSITIES: Record<Density, {
   meter: number
   volumeMeter: number
 }> = {
-  // `art: 0` means no cover at all: compact is a single line, so there is no
-  // height to hang one on, and the row would only push the text aside.
+  // `art: 0` means no cover at all: compact is the engine's one-row hint line,
+  // so there is no height to hang one on. It also means the poll skips the
+  // export entirely while compact is on (see `artKeyOf`).
   compact: { art: 0, rows: 0, byline: false, modes: false, meter: 8, volumeMeter: 0 },
   normal: { art: 12, rows: 4, byline: true, modes: true, meter: 16, volumeMeter: 8 },
 }
 
 const DEFAULT_DENSITY: Density = 'normal'
+
+// The hint line has no width to measure — it is one row the engine sizes — so
+// compact lays itself out against a fixed budget rather than the terminal's.
+// Wide enough for a title, a meter and a clock; the title clips past it.
+const COMPACT_COLUMNS = 64
 const isDensity = (word: string): word is Density => word in DENSITIES
 
 type Track = {
@@ -318,6 +330,17 @@ export const register: Register = on => {
   let density: Density = DEFAULT_DENSITY
 
   /**
+   * What the status row should say right now. It is the fallback for when the
+   * track is not already on screen: the full band draws it above the prompt,
+   * and compact draws it on the hint line, so in both of those the row would
+   * only repeat what is already there.
+   */
+  const rowFor = (t: Track) =>
+    (isShown && density !== 'compact') || (density === 'compact' && t.title !== undefined)
+      ? undefined
+      : statusLineOf(t)
+
+  /**
    * What identifies a cover: re-export only when the track itself changes —
    * or when the mode does, since each density asks for its own width.
    * `undefined` means there is no cover to fetch, either because nothing is
@@ -335,7 +358,7 @@ export const register: Register = on => {
       const next = parseTrack(await engine.run('status'))
       const changed = JSON.stringify(next) !== JSON.stringify(track)
       track = next
-      engine.status(isShown ? undefined : statusLineOf(track))
+      engine.status(rowFor(track))
 
       // The CLI caches per track, but the round trip still costs; only ask when
       // the track changed, and only while the band is on screen to show it.
@@ -405,7 +428,7 @@ export const register: Register = on => {
     if (query === 'close' || query === 'off') {
       isShown = false
       engine.invalidate()
-      engine.status(statusLineOf(track))
+      engine.status(rowFor(track))
       // Silent: the band appearing or leaving is the answer, and a line per
       // toggle buries the transcript (the status row carries it while hidden).
       return {}
@@ -414,9 +437,13 @@ export const register: Register = on => {
     // answer — so nothing is printed, as with the toggle. The cover is the one
     // thing that cannot just be re-laid out: the new mode wants its own width,
     // so the poll re-exports it (`artKeyOf` carries the mode for that reason).
+    //
+    // Compact lives on the hint line, which is always there, so switching to it
+    // has nothing to show and `isShown` is left alone: it records whether the
+    // full band is up, and is what `/player normal` then returns to.
     if (isDensity(query)) {
       density = query
-      isShown = true
+      if (query !== 'compact') isShown = true
       engine.status(undefined)
       engine.invalidate()
       void poll(engine).catch(() => undefined)
@@ -446,15 +473,18 @@ export const register: Register = on => {
       return { text: note ?? `playing: ${track.title ?? query}` }
     }
     isShown = !isShown
-    engine.status(isShown ? undefined : statusLineOf(track))
+    engine.status(rowFor(track))
     engine.invalidate()
     if (isShown) void poll(engine).catch(() => undefined)
     return {}
   })
 
+  // The full band, above the prompt. Compact does not draw here: it lives on
+  // the hint line under the prompt instead (see the `PromptHint` hook below).
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     const engine = host
-    if (!engine || !isShown || e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
+    if (!engine || !isShown || density === 'compact') return next(e)
+    if (e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
     const mode = DENSITIES[density]
     // Leave the right edge to the engine's collapse mark (`[-]`).
@@ -530,29 +560,13 @@ export const register: Register = on => {
           onPress={() => {
             isShown = false
             engine.invalidate()
-            engine.status(statusLineOf(track))
+            engine.status(rowFor(track))
           }}
         >
           ✕
         </Button>
       </Box>
     )
-
-    // Compact is one line, so the track and the buttons share it rather than
-    // stacking; a note still takes a line of its own, since it is a sentence.
-    if (mode.art === 0) {
-      return (
-        <Box width={outer} flexDirection="column" paddingX={1}>
-          <Box gap={2}>
-            <Text bold={track.state === 'playing'}>{left}</Text>
-            {meter(bar)}
-            <Text dimColor>{right}</Text>
-            {buttons}
-          </Box>
-          {note !== undefined ? <Text color="warning">{note}</Text> : null}
-        </Box>
-      )
-    }
 
     // Rows sit next to the cover rather than stretching to the terminal's
     // edge: pushed apart across 150 columns the title and its clock stopped
@@ -583,6 +597,53 @@ export const register: Register = on => {
           <Raster key="cover" columns={cover.columns} rows={cover.rows} cells={cover.cells} />
         ) : null}
         {body}
+      </Box>
+    )
+  })
+
+  /**
+   * Compact, drawn on the hint line under the prompt. It goes here rather than
+   * above the prompt because at one line it was competing with the status row
+   * for the same job — and this way it keeps its buttons, which a status row
+   * cannot have.
+   *
+   * It replaces the engine's hint (`? for shortcuts`) only while something is
+   * playing, and hands the line back when Music.app is idle, so the shortcuts
+   * are not lost to a band with nothing to say.
+   */
+  on('ui.render', { component: 'PromptHint' }, ($, e, next) => {
+    const engine = host
+    if (!engine || density !== 'compact' || track.title === undefined) return next(e)
+    if (e.surface !== 'terminal') return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const { left, bar, right } = trackLineOf(track, COMPACT_COLUMNS, 'compact')
+    const press = (...args: string[]) => () => {
+      void act(engine, ...args).catch(() => undefined)
+    }
+    const meterBox = (() => {
+      if (bar === '') return null
+      const { filled, rest } = splitMeter(bar)
+      return (
+        <Box key="meter">
+          <Text>{filled}</Text>
+          <Text dimColor>{rest}</Text>
+        </Box>
+      )
+    })()
+
+    return (
+      <Box gap={2}>
+        <Text bold={track.state === 'playing'}>{left}</Text>
+        {meterBox}
+        <Text dimColor>{right}</Text>
+        <Box gap={1}>
+          <Button key="prev" onPress={press('prev')}>⏮</Button>
+          <Button key="play" onPress={press('toggle')}>
+            {track.state === 'playing' ? '⏸' : '▶'}
+          </Button>
+          <Button key="next" onPress={press('next')}>⏭</Button>
+        </Box>
+        {note !== undefined ? <Text color="warning">{note}</Text> : null}
       </Box>
     )
   })
