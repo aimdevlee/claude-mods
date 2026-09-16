@@ -14,10 +14,10 @@ import type { EngineInterface, Register } from 'claude-code'
  * `/player normal` and remembered for the session. They draw in different
  * places, which is the point of the split:
  *
- *   compact  the hint line under the prompt — the track, a meter, transport.
- *            Always there while something plays, so there is nothing to toggle
- *            and no cover; it replaces `? for shortcuts` and hands that line
- *            back when Music.app goes idle.
+ *   compact  a row between the prompt and the hint line — the track, a meter,
+ *            transport. Always there while something plays, so there is nothing
+ *            to toggle and no cover; the engine's hint is redrawn beneath it,
+ *            and when Music.app goes idle the line is left exactly as it was.
  *   normal   the band above the prompt (default) — 4 rows beside a 12x4 cover,
  *            adding the byline, the volume and the mode buttons. `/player`
  *            toggles it, and the status row carries the track while it is down.
@@ -607,9 +607,10 @@ export const register: Register = on => {
    * for the same job — and this way it keeps its buttons, which a status row
    * cannot have.
    *
-   * It replaces the engine's hint (`? for shortcuts`) only while something is
-   * playing, and hands the line back when Music.app is idle, so the shortcuts
-   * are not lost to a band with nothing to say.
+   * It sits directly under the prompt with the engine's own hint kept beneath
+   * it, rather than taking that line over: the shortcuts stay where they were,
+   * and the track gets a row of its own between the two. When Music.app is
+   * idle the hook passes, so the hint line is exactly as the engine drew it.
    */
   on('ui.render', { component: 'PromptHint' }, ($, e, next) => {
     const engine = host
@@ -632,18 +633,26 @@ export const register: Register = on => {
     })()
 
     return (
-      <Box gap={2}>
-        <Text bold={track.state === 'playing'}>{left}</Text>
-        {meterBox}
-        <Text dimColor>{right}</Text>
-        <Box gap={1}>
-          <Button key="prev" onPress={press('prev')}>⏮</Button>
-          <Button key="play" onPress={press('toggle')}>
-            {track.state === 'playing' ? '⏸' : '▶'}
-          </Button>
-          <Button key="next" onPress={press('next')}>⏭</Button>
+      <Box flexDirection="column">
+        <Box gap={2}>
+          <Text bold={track.state === 'playing'}>{left}</Text>
+          {meterBox}
+          <Text dimColor>{right}</Text>
+          <Box gap={1}>
+            <Button key="prev" onPress={press('prev')}>⏮</Button>
+            <Button key="play" onPress={press('toggle')}>
+              {track.state === 'playing' ? '⏸' : '▶'}
+            </Button>
+            <Button key="next" onPress={press('next')}>⏭</Button>
+          </Box>
+          {note !== undefined ? <Text color="warning">{note}</Text> : null}
         </Box>
-        {note !== undefined ? <Text color="warning">{note}</Text> : null}
+        {/*
+          The engine's own hint, redrawn beneath so taking this slot does not
+          cost the shortcuts their line. `hint` is the line as the engine would
+          have drawn it, read the way a screen reader reads it.
+        */}
+        {e.props.hint !== '' ? <Text dimColor>{e.props.hint}</Text> : null}
       </Box>
     )
   })

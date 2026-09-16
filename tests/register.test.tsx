@@ -477,6 +477,20 @@ describe('player band', () => {
     }
   })
 
+  test('compact sits above the engine hint rather than replacing it', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const hint = JSON.stringify(await $.ui.render(HINT))
+    expect(hint, 'the track gets a row of its own').toContain('LOVE ATTACK · 리센느')
+    expect(hint, 'and the shortcuts keep theirs beneath it').toContain('? for shortcuts')
+    expect(hint, 'stacked, so the two do not share a line').toContain('"flexDirection":"column"')
+  })
+
   test('compact hands the hint line back when nothing is playing', async ($, on) => {
     const w = world(on, '{"state":"stopped"}')
     let engineDrew = false
