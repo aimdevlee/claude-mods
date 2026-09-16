@@ -154,7 +154,7 @@ describe('player band', () => {
 
     expect(verbs(w.runs), 'the band asks for the artwork once the track is known').toContain('art')
     const artRun = w.runs.find(argv => argv[1] === 'art')
-    expect(artRun?.[2], 'twenty columns wide').toBe('20')
+    expect(artRun?.[2], 'twelve columns wide — a square cover four rows tall').toBe('12')
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
     expect(drawn).toContain('Raster')
@@ -177,6 +177,39 @@ describe('player band', () => {
     expect(drawn, 'U+25AF fell back to tofu in a real session').not.toContain('▯')
   })
 
+  test('a meter draws its filled half undimmed so the level reads', async ($, on) => {
+    // Dimming the whole bar as one string washed the two glyphs into a single
+    // grey slab on a real terminal — the progress was there but unreadable.
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'the filled run keeps the foreground colour').toContain(
+      '{"type":"Text","children":["███████"]}',
+    )
+    expect(drawn, 'and only the remainder is dimmed').toContain(
+      '{"type":"Text","props":{"dimColor":true},"children":["░░░░░░░░░"]}',
+    )
+  })
+
+  test('the rows sit beside the cover instead of stretching to the edge', async ($, on) => {
+    // Pushed apart with space-between across 150 columns, the title and its
+    // clock stopped reading as a pair and the band became scattered pieces.
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'nothing is pushed to the far edge').not.toContain('space-between')
+  })
+
   test('a meter stays full width when the CLI reports nonsense', async ($, on) => {
     // parseTrack casts the CLI's JSON without checking types, so a volume that
     // is not a number reaches the meter and divides to NaN.
@@ -189,13 +222,14 @@ describe('player band', () => {
     await w.clock.settle()
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
-    // The volume meter sits immediately before its label, so match the pair:
-    // the position meter's own run of shade would otherwise satisfy this.
+    // The meter is now two Texts, so match the row that carries the volume:
+    // an empty filled half, the full remainder, and then the label. Eight is
+    // `DENSITIES.normal.volumeMeter` — the hooks module is loaded by the
+    // harness rather than imported, so the width is spelled out here.
     expect(drawn, 'a NaN ratio must not collapse the meter and shift the row').toContain(
-      // Eight is `DENSITIES.normal.volumeMeter`; the hooks module is loaded by
-      // the harness rather than imported, so the width is spelled out here.
-      `${'░'.repeat(8)} vol`,
+      `{"type":"Text","children":[""]},{"type":"Text","props":{"dimColor":true},"children":["${'░'.repeat(8)}"]}`,
     )
+    expect(drawn, 'and the row still names it').toContain('vol loud')
   })
 
   test('the artwork is exported once per track, not once per poll', async ($, on) => {
@@ -220,7 +254,7 @@ describe('player band', () => {
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
     expect(drawn, 'the plate stands in for the cover').toContain('Raster')
-    expect(drawn, 'and takes exactly the cover’s room').toContain('"columns":20,"rows":4')
+    expect(drawn, 'and takes exactly the cover’s room').toContain('"columns":12,"rows":4')
     expect(drawn).toContain('LOVE ATTACK')
   })
 
@@ -238,7 +272,7 @@ describe('player band', () => {
 
     const bytes = Uint8Array.from(atob(cells ?? ''), ch => ch.charCodeAt(0))
     const words = new Uint32Array(bytes.buffer)
-    expect(words.length, '20 x 4 cells, three words each').toBe(20 * 4 * 3)
+    expect(words.length, '12 x 4 cells, three words each').toBe(12 * 4 * 3)
 
     // A Raster cell must be one printable width-1 BMP character, so a code
     // point outside the BMP — or an ambiguous-width one like U+266A — is a bug.
@@ -253,23 +287,21 @@ describe('player band', () => {
     }
   })
 
-  test('a coverless band keeps the text rows at the same width', async ($, on) => {
+  test('a coverless track draws the same rows a covered one does', async ($, on) => {
+    // The rows are laid out beside the plate rather than stretched to the
+    // terminal's width, so what must not change between a covered track and a
+    // coverless one is the rows themselves — same text, same meters, same
+    // height — with only the Raster's cells differing.
     const w = world(on, PLAYING, '{"columns":0,"rows":0,"cells":""}')
-
     await $.session.start(SESSION)
     await $.command.run(player())
     await w.clock.advance(1000)
     await w.clock.settle()
-
     const drawn = JSON.stringify(await $.ui.render(BAND))
-    // 160 body columns, less 6 for the collapse mark, less the plate's 20 and
-    // the gap: the same 132 a real cover leaves, so nothing reflows.
-    expect(drawn, 'the text column is measured off the plate, not the full width').toContain(
-      '"width":132',
-    )
-    expect(drawn, 'and the details still fill the plate’s height').toContain(
-      '리센느 — SCENEDROME - EP',
-    )
+
+    expect(drawn, 'the plate stands in at the cover’s size').toContain('"columns":12,"rows":4')
+    expect(drawn, 'the byline fills the plate’s height').toContain('리센느 — SCENEDROME - EP')
+    expect(drawn, 'and so does the volume').toContain('vol 100')
   })
 
   test('the transport buttons run the CLI', async ($, on) => {
@@ -430,7 +462,7 @@ describe('player band', () => {
     await w.clock.settle()
 
     const widths = w.runs.filter(a => a[1] === 'art').map(a => a[2])
-    expect(widths, 'the track never changed, but the mode did').toEqual(['20'])
+    expect(widths, 'the track never changed, but the mode did').toEqual(['12'])
   })
 
   test('a density word is not played as a song', async ($, on) => {

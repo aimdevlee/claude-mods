@@ -26,12 +26,21 @@ import tempfile
 
 CACHE = os.path.join(tempfile.gettempdir(), "player-art-cache")
 
-# How much taller than wide one drawn Raster cell is, measured off a real
-# session: the terminal's own grid ran 14.58 x 36 px (2.47), and the cover came
-# out 2 x taller still, so the surface draws a block cell over two screen rows.
-# 2.47 x 2 ~= 4.9: an image 4.9 x wider than tall reads square on screen.
-# Re-measure and change this one number if a cover ever looks stretched.
-CELL_ASPECT = 4.9
+# How much taller than wide one drawn Raster cell is: an image this many times
+# wider than tall reads square on screen.
+#
+# Measured off a screenshot rather than reasoned about, because the earlier
+# value (4.9) assumed the surface draws a block cell over two screen rows on
+# top of the grid's own 2.47 ratio, and a 20x4 cover then came out visibly
+# squashed — 175 x 95 px, where square would be 1:1. That works out to 8.75 px
+# per cell column against 23.75 px per Raster row, so the real ratio is ~2.7
+# and the doubling was already counted in the grid figure.
+#
+# This is per-terminal: it moves with the font and with settings like Ghostty's
+# `adjust-cell-height`. Re-measure and change this one number if a cover ever
+# looks stretched — screenshot a cover, divide its width by its height, and
+# multiply this value by that.
+CELL_ASPECT = 2.7
 
 # Quadrant blocks indexed by a 4-bit mask of which pixels are the bright group:
 # bit 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right. Mask 0 never

@@ -45,8 +45,9 @@ const LISTING = new Set(['search', 'search-library', 'catalog', 'playlists', 'op
  *
  * `rows` is therefore not free: it is `bin/player-art`'s own arithmetic, and a
  * value that disagrees makes a coverless track a different height from a
- * covered one. Measured, not guessed — 20 columns answers 4 rows. Changing
- * `art` means re-running `player art <n>` and copying the count it answers.
+ * covered one. Measured, not guessed — 12 columns answers 4 rows. Changing
+ * `art` means re-running `player art <n>` and copying the count it answers,
+ * and `CELL_ASPECT` in `bin/player-art` shifts these counts when it changes.
  * `meter` is the position bar's width, and `volumeMeter` the volume's; 0 means
  * the mode leaves that bar out and prints only the numbers.
  */
@@ -63,7 +64,7 @@ export const DENSITIES: Record<Density, {
   // `art: 0` means no cover at all: compact is a single line, so there is no
   // height to hang one on, and the row would only push the text aside.
   compact: { art: 0, rows: 0, byline: false, modes: false, meter: 8, volumeMeter: 0 },
-  normal: { art: 20, rows: 4, byline: true, modes: true, meter: 16, volumeMeter: 8 },
+  normal: { art: 12, rows: 4, byline: true, modes: true, meter: 16, volumeMeter: 8 },
 }
 
 const DEFAULT_DENSITY: Density = 'normal'
@@ -194,6 +195,17 @@ export const iconOf = (track: Track) =>
  * has. U+25AE/25AF (`▮▯`) looked right but fell back to tofu in the session's
  * font, so the fill is a full block and the track a light shade.
  */
+/**
+ * Split a meter into its filled and empty halves so each can be drawn in its
+ * own colour. Dimming the whole bar as one string turns it into a flat grey
+ * slab — the two glyphs are close enough in weight that the contrast has to
+ * come from colour, not from the characters.
+ */
+export function splitMeter(bar: string): { filled: string; rest: string } {
+  const at = bar.lastIndexOf('█') + 1
+  return { filled: bar.slice(0, at), rest: bar.slice(at) }
+}
+
 export function meterOf(fraction: number, width: number): string {
   if (width <= 0) return ''
   // A zero duration divides to NaN, which would otherwise widen to nothing and
@@ -209,14 +221,18 @@ export function meterOf(fraction: number, width: number): string {
  * The position bar is the mode's width, shrunk to what the row can spare and
  * dropped entirely when fewer than six columns are left for it — a narrow
  * terminal keeps the title and the clock, which are the row's point.
+ *
+ * The bar comes back on its own rather than joined to the clock, because the
+ * two want different colours: dimmed as one string, its filled and empty
+ * halves washed into a single grey slab with no readable progress.
  */
 export function trackLineOf(
   track: Track,
   columns: number,
   density: Density = DEFAULT_DENSITY,
-): { left: string; right: string } {
+): { left: string; bar: string; right: string } {
   if (track.title === undefined) {
-    return { left: '■ Apple Music: nothing playing', right: '' }
+    return { left: '■ Apple Music: nothing playing', bar: '', right: '' }
   }
   const position = track.position ?? 0
   const duration = track.duration ?? 0
@@ -228,10 +244,9 @@ export function trackLineOf(
   const title = `${iconOf(track)} ${name}`
   const spare = columns - widthOf(clock) - widthOf(title) - 3
   const barWidth = Math.min(DENSITIES[density].meter, Math.max(0, spare))
-  const bar = barWidth >= 6 ? `${meterOf(duration > 0 ? position / duration : 0, barWidth)} ` : ''
-  const right = `${bar}${clock}`
-  const left = clip(title, Math.max(10, columns - widthOf(right) - 2))
-  return { left, right }
+  const bar = barWidth >= 6 ? meterOf(duration > 0 ? position / duration : 0, barWidth) : ''
+  const left = clip(title, Math.max(10, columns - widthOf(clock) - widthOf(bar) - 3))
+  return { left, bar, right: clock }
 }
 
 /** `artist — album`, the pair that names a track apart from its title. */
@@ -242,34 +257,37 @@ export function bylineOf(track: Track): string {
 /**
  * The rows that fill the cover's height beside it. Which ones appear is the
  * mode's call: compact has room for neither, so the artist rides the track row
- * instead, while normal and full give the byline and the modes-and-volume row
- * a line each.
+ * instead, while normal gives the byline and the modes-and-volume row a line
+ * each. `bar` is kept apart from the text for the same reason as the position
+ * meter: its two halves need different colours to read as a level.
  */
 export function detailRowsOf(
   track: Track,
   columns: number,
   density: Density = DEFAULT_DENSITY,
-): { left: string; right: string }[] {
+): { left: string; bar: string; right: string }[] {
   if (track.title === undefined) return []
   const mode = DENSITIES[density]
-  const rows: { left: string; right: string }[] = []
+  const rows: { left: string; bar: string; right: string }[] = []
   if (mode.byline) {
     const byline = bylineOf(track)
-    if (byline !== '') rows.push({ left: clip(byline, Math.max(10, columns - 2)), right: '' })
+    if (byline !== '') {
+      rows.push({ left: clip(byline, Math.max(10, columns - 2)), bar: '', right: '' })
+    }
   }
   if (mode.modes) {
     const volume = track.volume ?? 0
     const width = mode.volumeMeter
     // The volume bar is worth its room only once the row has some; below that
     // the number alone says it, and the modes keep the left of the row.
-    const meter = width > 0 && columns >= 60 ? `${meterOf(volume / 100, width)} ` : ''
+    const bar = width > 0 && columns >= 40 ? meterOf(volume / 100, width) : ''
     const modes = [
       track.shuffle ? 'shuffle' : '',
       track.repeat && track.repeat !== 'off' ? `repeat ${track.repeat}` : '',
     ]
       .filter(Boolean)
       .join('  ')
-    rows.push({ left: modes, right: `${meter}vol ${volume}` })
+    rows.push({ left: modes, bar, right: `vol ${volume}` })
   }
   return rows
 }
@@ -447,8 +465,21 @@ export const register: Register = on => {
     const cover = mode.art === 0 ? undefined : art ?? placeholderArt(mode.art, mode.rows)
     // The art takes its columns plus a gap; the text rows get what is left.
     const columns = Math.max(20, outer - (cover === undefined ? 0 : cover.columns + 2))
-    const { left, right } = trackLineOf(track, columns, density)
+    const { left, bar, right } = trackLineOf(track, columns, density)
     const volume = track.volume ?? 50
+    // The filled run keeps the foreground colour and only the remainder is
+    // dimmed, which is what makes the level legible; dimming the whole bar
+    // flattened it into one grey slab on a real terminal.
+    const meter = (text: string) => {
+      if (text === '') return null
+      const { filled, rest } = splitMeter(text)
+      return (
+        <Box key="meter">
+          <Text>{filled}</Text>
+          <Text dimColor>{rest}</Text>
+        </Box>
+      )
+    }
     const press = (...args: string[]) => () => {
       void act(engine, ...args).catch(() => undefined)
     }
@@ -514,6 +545,7 @@ export const register: Register = on => {
         <Box width={outer} flexDirection="column" paddingX={1}>
           <Box gap={2}>
             <Text bold={track.state === 'playing'}>{left}</Text>
+            {meter(bar)}
             <Text dimColor>{right}</Text>
             {buttons}
           </Box>
@@ -522,16 +554,22 @@ export const register: Register = on => {
       )
     }
 
+    // Rows sit next to the cover rather than stretching to the terminal's
+    // edge: pushed apart across 150 columns the title and its clock stopped
+    // reading as a pair, and the band became scattered pieces instead of one
+    // block. A gap keeps them together, the way compact already does.
     const body = (
-      <Box flexDirection="column" width={columns}>
-        <Box justifyContent="space-between">
+      <Box flexDirection="column">
+        <Box gap={2}>
           <Text bold={track.state === 'playing'}>{left}</Text>
+          {meter(bar)}
           <Text dimColor>{right}</Text>
         </Box>
         {details.map((row, i) => (
-          <Box key={`detail-${i}`} justifyContent="space-between">
-            <Text dimColor>{row.left}</Text>
-            <Text dimColor>{row.right}</Text>
+          <Box key={`detail-${i}`} gap={2}>
+            {row.left !== '' ? <Text dimColor>{row.left}</Text> : null}
+            {meter(row.bar)}
+            {row.right !== '' ? <Text dimColor>{row.right}</Text> : null}
           </Box>
         ))}
         {buttons}
