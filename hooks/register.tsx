@@ -603,14 +603,24 @@ export const register: Register = on => {
 
     // Compact is a single row, so the track and the buttons share it rather
     // than stacking. A note still takes a line of its own, being a sentence.
+    //
+    // The rule at the left is a glyph rather than a border: `AbovePrompt`
+    // frames the band for focus and collapse, which leaves a blank line above
+    // and below whatever the hook draws, and a one-row band floating in that
+    // gap reads as a stray line of transcript. A rule marks it as the player's
+    // own without the box a `borderStyle` would draw (and the allowlist has no
+    // per-edge border prop, so a left-only border is not available anyway).
     if (mode.art === 0) {
       return (
         <Box width={outer} flexDirection="column" paddingX={1}>
-          <Box gap={2}>
-            <Text bold={track.state === 'playing'}>{left}</Text>
-            {meter(bar)}
-            <Text dimColor>{right}</Text>
-            {buttons}
+          <Box gap={1}>
+            <Text dimColor>│</Text>
+            <Box gap={2}>
+              <Text bold={track.state === 'playing'}>{left}</Text>
+              {meter(bar)}
+              <Text dimColor>{right}</Text>
+              {buttons}
+            </Box>
           </Box>
           {note !== undefined ? <Text color="warning">{note}</Text> : null}
         </Box>
