@@ -81,6 +81,11 @@ export const DENSITIES: Record<Density, {
 // `/player` still opens the full band, and `/player compact` comes back here.
 const DEFAULT_DENSITY: Density = 'compact'
 
+// How far ⏪ and ⏩ move. Ten seconds is the step a podcast player uses: long
+// enough to be worth a click, short enough that two clicks are still a finer
+// move than dragging a bar eight cells wide could be.
+const SKIP_SECONDS = 10
+
 const isDensity = (word: string): word is Density => word in DENSITIES
 
 type Track = {
@@ -553,10 +558,25 @@ export const register: Register = on => {
     const repeats = { off: 'all', all: 'one', one: 'off' } as const
     const repeat = track.repeat === 'all' || track.repeat === 'one' ? track.repeat : 'off'
 
+    // `seek` takes an absolute position, so a skip is worked out from where the
+    // track is now, clamped to its ends: seeking past the duration would end
+    // the track, which is what ⏭ is for, and a negative rewinds to nothing.
+    const skipTo = (by: number) =>
+      String(Math.max(0, Math.min((track.duration ?? 0) - 1, (track.position ?? 0) + by)))
+
     const buttons = (
       <Box gap={1}>
         {key('prev', '⏮')('prev')}
+        {/*
+          Ten seconds either way rather than a click on the bar: `ui.press`
+          carries `{ plugin, element, component, surface }` and no coordinate,
+          so the band cannot tell where along a bar the pointer landed. Drawing
+          the bar as one Button per cell would encode the position in the key,
+          but Buttons carry `[ ]` chrome, and `[█][░][░]` is no longer a bar.
+        */}
+        {key('back', '⏪')('seek', skipTo(-SKIP_SECONDS))}
         {key('play', track.state === 'playing' ? '⏸' : '▶')('toggle')}
+        {key('forward', '⏩')('seek', skipTo(SKIP_SECONDS))}
         {key('next', '⏭')('next')}
         {/*
           Compact has one line for everything, so it keeps only the transport

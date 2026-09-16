@@ -362,6 +362,58 @@ describe('player band', () => {
     expect(volumeRun?.[2]).toBe('95')
   })
 
+  test('the skip buttons seek from where the track is now', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    await $.ui.render(BAND)
+
+    // `seek` takes an absolute position, so a ten-second skip is the fixture's
+    // 82.7 plus or minus ten rather than the ten itself.
+    await $.ui.press({ plugin: 'player', key: 'forward' })
+    await w.clock.settle()
+    expect(w.runs.find(argv => argv[1] === 'seek')?.[2]).toBe('92.7')
+
+    await $.ui.press({ plugin: 'player', key: 'back' })
+    await w.clock.settle()
+    expect(w.runs.filter(argv => argv[1] === 'seek').at(-1)?.[2]).toBe('72.7')
+  })
+
+  test('a skip near the ends stays inside the track', async ($, on) => {
+    // Four seconds in, so back would be negative; `seek` clamps to 0 instead
+    // of rewinding to nothing.
+    const w = world(on, JSON.stringify({ ...JSON.parse(PLAYING), position: 4 }))
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    await $.ui.render(BAND)
+
+    await $.ui.press({ plugin: 'player', key: 'back' })
+    await w.clock.settle()
+    expect(w.runs.find(argv => argv[1] === 'seek')?.[2]).toBe('0')
+  })
+
+  test('a skip past the end stops short rather than ending the track', async ($, on) => {
+    // Three seconds from the end: forward would overshoot, which would skip to
+    // the next track — and that is what the ⏭ button is for.
+    const w = world(on, JSON.stringify({ ...JSON.parse(PLAYING), position: 178.6 }))
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    await $.ui.render(BAND)
+
+    await $.ui.press({ plugin: 'player', key: 'forward' })
+    await w.clock.settle()
+    expect(w.runs.find(argv => argv[1] === 'seek')?.[2]).toBe('180.6')
+  })
+
   test('/player <song> plays it, and bare /player opens and closes the band', async ($, on) => {
     const w = world(on)
 
