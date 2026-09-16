@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Cassette screen renderer and resident TUI for the player CLI.
+
+  player-ui --once [JSON]   render one frame from JSON (or fetch from Music.app)
+  player-ui                 resident player: redraws every second, keyboard control
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import unicodedata
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLAYER = os.path.join(HERE, "player")
+W = 23  # screen inner width
+
+DEMO = {
+    "state": "playing", "title": "LOVE ATTACK", "artist": "리센느",
+    "album": "SCENEDROME - EP", "duration": 181.6, "position": 82.7,
+    "volume": 100, "shuffle": False, "repeat": "off",
+}
+
+KEYS = [
+    ("space / enter", "play · pause"),
+    ("n  p", "next · prev"),
+    ("+  -", "volume"),
+    ("← →", "seek 10s"),
+    ("s  r", "shuffle · repeat"),
+    ("/", "search & play"),
+    ("q", "quit"),
+]
+
+
+def player(*args):
+    return subprocess.run([PLAYER, *args], capture_output=True, text=True).stdout
+
+
+def fetch():
+    try:
+        return json.loads(player("status"))
+    except Exception:
+        return {"state": "stopped"}
+
+
+def cw(ch):
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def clip(s, w):
+    out, used = "", 0
+    for ch in s:
+        if used + cw(ch) > w:
+            break
+        out += ch
+        used += cw(ch)
+    return out, used
+
+
+def pad(s, w=W):
+    s, used = clip(s, w)
+    return s + " " * (w - used)
+
+
+def lr(left, right, w=W):
+    right, rw = clip(right, w)
+    left, lw = clip(left, w - rw - 1)
+    return left + " " * (w - lw - rw) + right
+
+
+def mmss(s):
+    s = int(s)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def frame(d, pressed=None, message=None):
+    """Return the player drawing as a list of lines."""
+    st = d.get("state", "stopped")
+    if "title" in d:
+        icon = {"playing": "▶", "paused": "‖"}.get(st, "■")
+        pos, dur = d["position"], d["duration"] or 1
+        filled = min(W, int(W * pos / dur))
+        rows = [
+            lr("Now Playing", icon), "",
+            pad(d["title"]), pad(d["artist"]), pad(d["album"]), "",
+            "▮" * filled + "▯" * (W - filled),
+            lr(mmss(pos), "-" + mmss(dur - pos)),
+        ]
+    else:
+        rows = [
+            lr("Player", "■"), "",
+            pad("  Music              >"), pad("  Playlists          >"),
+            pad("  Settings           >"), pad("  Now Playing"), "",
+            pad("(nothing playing)"),
+        ]
+    if message:
+        rows[-3] = pad(message)
+
+    def b(name, label):  # click-wheel label, bracketed while pressed
+        return f"[{label}]" if pressed == name else f" {label} "
+
+    lines = [" ╭─────────────────────────────╮", " │ ┌─────────────────────────┐ │"]
+    lines += [f" │ │ {pad(r)} │ │" for r in rows]
+    lines += [
+        " │ └─────────────────────────┘ │",
+        " │                             │",
+        " │          ╭───────╮          │",
+        f" │          │{b('menu', 'MENU ')}│          │",
+        " │      ╭───┴───────┴───╮      │",
+        f" │  {b('prev', '⏮')} │   ╭───────╮   │ {b('next', '⏭')}  │",
+        f" │      │   │{b('select', '  ●  ')}│   │      │",
+        " │      │   ╰───────╯   │      │",
+        " │      ╰───┬───────┬───╯      │",
+        f" │          │{b('play', ' ⏯   ')}│          │",
+        " │          ╰───────╯          │",
+        " ╰─────────────────────────────╯",
+    ]
+    if "title" in d:
+        sh = "on" if d.get("shuffle") else "off"
+        lines.append(f"   vol {d['volume']}  shuffle {sh}  repeat {d['repeat']}")
+    return lines
+
+
+def once(argv):
+    if argv and argv[0] == "demo":
+        d = DEMO
+    elif argv:
+        d = json.loads(argv[0])
+    else:
+        d = fetch()
+    print("\n".join(frame(d)))
+
+
+def run_tui():
+    import curses
+
+    def main(scr):
+        curses.curs_set(0)
+        scr.timeout(1000)
+        try:
+            curses.use_default_colors()
+        except Exception:
+            pass
+        pressed = None
+        pressed_until = 0
+        message = None
+        message_until = 0
+        d = fetch()
+        last_fetch = time.time()
+
+        def act(name, *cmd, note=None):
+            nonlocal pressed, pressed_until, message, message_until, d, last_fetch
+            pressed, pressed_until = name, time.time() + 0.3
+            if cmd:
+                player(*cmd)
+            if note:
+                message, message_until = note, time.time() + 2
+            d = fetch()
+            last_fetch = time.time()
+
+        while True:
+            now = time.time()
+            if now - last_fetch >= 1:
+                d = fetch()
+                last_fetch = now
+            if pressed and now > pressed_until:
+                pressed = None
+            if message and now > message_until:
+                message = None
+            scr.erase()
+            lines = frame(d, pressed, message)
+            for i, line in enumerate(lines):
+                try:
+                    scr.addstr(i, 0, line)
+                except curses.error:
+                    pass
+            y = len(lines) + 1
+            for k, v in KEYS:
+                try:
+                    scr.addstr(y, 3, f"{k:<14}{v}", curses.A_DIM)
+                except curses.error:
+                    pass
+                y += 1
+            scr.refresh()
+
+            ch = scr.getch()
+            if ch == -1:
+                continue
+            if ch in (ord("q"), 27):
+                break
+            elif ch in (ord(" "), 10, 13):
+                act("play", "toggle")
+            elif ch in (ord("n"), curses.KEY_DOWN):
+                act("next", "next")
+            elif ch in (ord("p"), curses.KEY_UP):
+                act("prev", "prev")
+            elif ch in (ord("+"), ord("=")):
+                v = min(100, int(d.get("volume", 50)) + 5)
+                act("select", "volume", str(v), note=f"volume {v}")
+            elif ch in (ord("-"), ord("_")):
+                v = max(0, int(d.get("volume", 50)) - 5)
+                act("select", "volume", str(v), note=f"volume {v}")
+            elif ch == curses.KEY_RIGHT and "position" in d:
+                act("next", "seek", str(int(d["position"]) + 10))
+            elif ch == curses.KEY_LEFT and "position" in d:
+                act("prev", "seek", str(max(0, int(d["position"]) - 10)))
+            elif ch == ord("s"):
+                new = "off" if d.get("shuffle") else "on"
+                act("menu", "shuffle", new, note=f"shuffle {new}")
+            elif ch == ord("r"):
+                cycle = {"off": "all", "all": "one", "one": "off"}
+                new = cycle.get(d.get("repeat", "off"), "off")
+                act("menu", "repeat", new, note=f"repeat {new}")
+            elif ch == ord("/"):
+                curses.echo()
+                curses.curs_set(1)
+                scr.timeout(-1)
+                try:
+                    scr.addstr(y + 1, 3, "play: ")
+                    q = scr.getstr(y + 1, 9, 60).decode("utf-8", "replace").strip()
+                finally:
+                    curses.noecho()
+                    curses.curs_set(0)
+                    scr.timeout(1000)
+                if q:
+                    out = player("play", q).strip().splitlines()
+                    # An ambiguous query answers with a numbered list whose last
+                    # line is the "then: player play ..." hint, which says nothing
+                    # on its own. Report the reason and let the user retype.
+                    if any("is ambiguous" in ln for ln in out):
+                        note = f"{q}: several matches — add the artist"
+                    else:
+                        note = out[-1] if out else ""
+                    act("select", note=note[:W])
+
+    curses.wrapper(main)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--once":
+        once(sys.argv[2:])
+    else:
+        run_tui()

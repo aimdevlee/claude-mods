@@ -1,0 +1,8 @@
+{
+  "name": "player",
+  "description": "Cassette style Apple Music player for Claude Code (macOS, official Apple interfaces only)",
+  "version": "0.1.0",
+  "author": { "name": "aimdevlee" },
+  "license": "MIT",
+  "keywords": ["apple-music", "music", "player", "cassette", "macos"]
+}

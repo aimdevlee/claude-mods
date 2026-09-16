@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# One-line player status for the Claude Code status line.
+# Reads the statusLine JSON on stdin and appends the current Apple Music track (cassette style).
+set -uo pipefail
+input="$(cat)"
+model="$(printf '%s' "$input" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("model",{}).get("display_name",""))
+except Exception: print("")' 2>/dev/null)"
+j="$("$(dirname "$0")/player" status 2>/dev/null)"
+tape="$(python3 - "$j" <<'PY'
+import json, sys
+try: d = json.loads(sys.argv[1])
+except Exception: d = {}
+st = d.get("state", "stopped")
+if "title" not in d:
+    print("🎵 ■"); sys.exit()
+i = {"playing": "▶", "paused": "‖"}.get(st, "■")
+def mmss(s):
+    s = int(s); return f"{s//60}:{s%60:02d}"
+print(f"🎵 {i} {d['title']} · {d['artist']} {mmss(d['position'])}/{mmss(d['duration'])}")
+PY
+)"
+printf '%s%s\n' "${model:+$model  }" "$tape"

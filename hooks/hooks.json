@@ -1,0 +1,4 @@
+{
+  "description": "The player pane: /player opens a live Apple Music screen beside the transcript, polled every second, with click-wheel buttons and a search field that drive Music.app through bin/player",
+  "modules": ["./register.tsx"]
+}

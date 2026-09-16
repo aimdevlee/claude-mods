@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# player — Apple Music controller using only official Apple interfaces:
+#   * Music.app AppleScript dictionary (playback, library, playlists)
+#   * iTunes Search API (catalog lookup, no key required)
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: player <command> [args]
+
+  play [query]        resume, or rank library + catalog matches and play the best one
+  playlist <name>     play a playlist by name
+  playlists           list playlist names
+  pause | stop        pause / stop playback
+  toggle              toggle play/pause
+  next | prev         skip forward / back
+  seek <sec>          jump to position in seconds
+  volume [0-100]      get or set volume
+  shuffle [on|off]    get or set shuffle
+  repeat [off|one|all]
+  now                 draw the player screen for the current track (add "demo" for a sample)
+  ui                  resident player: live screen with keyboard control (q to quit)
+  status              print machine-readable state (JSON)
+  art [size]          current artwork as terminal Raster cells (JSON), cached per track
+  search <query>      rank library + catalog matches without playing
+  search-library <q>  list raw library matches without playing
+  catalog <query>     search the Apple Music catalog (iTunes Search API)
+  open <query>        open the first catalog match in Music.app
+USAGE
+}
+
+music() { osascript -e "tell application \"Music\" to $1" 2>&1; }
+state() { music 'player state as text'; }
+
+track_json() {
+  osascript <<'AS' 2>/dev/null
+tell application "Music"
+  set playerState to player state as text
+  if playerState is "stopped" then return "{\"state\":\"stopped\"}"
+  try
+    set theTrack to current track
+    set trackTitle to name of theTrack
+    set trackArtist to artist of theTrack
+    set trackAlbum to album of theTrack
+    set trackDuration to duration of theTrack
+    set trackPosition to player position
+    set currentVolume to sound volume
+    set shuffleOn to shuffle enabled
+    set repeatMode to song repeat as text
+  on error
+    return "{\"state\":\"" & playerState & "\"}"
+  end try
+  set AppleScript's text item delimiters to "\""
+  set trackTitle to (text items of trackTitle) as text
+  set trackArtist to (text items of trackArtist) as text
+  set trackAlbum to (text items of trackAlbum) as text
+  set AppleScript's text item delimiters to ""
+  return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"}"
+end tell
+AS
+}
+
+now() {
+  if [[ "${1:-}" == "demo" ]]; then "$(dirname "$0")/player-ui" --once demo
+  else "$(dirname "$0")/player-ui" --once; fi
+}
+
+search_library() {
+  osascript - "$1" <<'AS' 2>&1
+on run argv
+  tell application "Music"
+    set matches to search library playlist 1 for (item 1 of argv)
+    set lines to {}
+    repeat with aTrack in matches
+      set end of lines to (name of aTrack & " — " & artist of aTrack & " [" & album of aTrack & "]")
+    end repeat
+    set AppleScript's text item delimiters to linefeed
+    return lines as text
+  end tell
+end run
+AS
+}
+
+play_library() {
+  osascript - "$1" <<'AS' 2>&1
+on run argv
+  tell application "Music"
+    set matches to search library playlist 1 for (item 1 of argv)
+    if (count of matches) is 0 then return "NOMATCH"
+    play item 1 of matches
+    delay 0.5
+    return name of current track & " — " & artist of current track
+  end tell
+end run
+AS
+}
+
+catalog() {
+  local q cc
+  q="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$1")"
+  cc="${PLAYER_COUNTRY:-US}"
+  curl -sS "https://itunes.apple.com/search?term=${q}&entity=song&limit=${2:-5}&country=${cc}" \
+    | python3 -c "
+import json, sys
+for r in json.load(sys.stdin)['results']:
+    print(r['trackId'], '\t', r['trackName'], ' — ', r['artistName'], ' [', r['collectionName'], ']', '\t', r['trackViewUrl'], sep='')"
+}
+
+open_catalog() {
+  local line url
+  line="$(catalog "$1" 1)"
+  if [[ -z "$line" ]]; then echo "catalog: no match for '$1'"; return 1; fi
+  url="$(cut -f3 <<<"$line" | sed 's/&uo=4//')"
+  echo "opening: $(cut -f2 <<<"$line")"
+  music "open location \"$url\"" >/dev/null
+  echo "$url"
+}
+
+# Play the one library track the ranker chose, matched on title and artist
+# rather than Music.app's own unordered first hit.
+# Read one field of the top-ranked hit from player-search --json output.
+pick() {
+  printf '%s' "$1" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+field = sys.argv[1]
+if field == "decisive":
+    print("yes" if d.get("decisive") else "no")
+elif field == "count":
+    print(len(d.get("results") or []))
+else:
+    r = d.get("results") or [{}]
+    print(r[0].get(field, ""))' "$2"
+}
+
+play_library_exact() {
+  osascript - "$1" "$2" <<'AS' 2>&1
+on run argv
+  set wantTitle to item 1 of argv
+  set wantArtist to item 2 of argv
+  tell application "Music"
+    -- Every playlist, not just the library: the Apple Music subscription
+    -- playlists hold shared tracks that play like any owned song.
+    repeat with pl in (get every playlist)
+      try
+        repeat with t in (search pl for wantTitle)
+          if (name of t is wantTitle) and (wantArtist is "" or artist of t is wantArtist) then
+            play t
+            delay 0.5
+            return name of current track & " — " & artist of current track
+          end if
+        end repeat
+      end try
+    end repeat
+    return "NOMATCH"
+  end tell
+end run
+AS
+}
+
+# Show a catalog song in Music.app, ready for the user to press play.
+#
+# Nothing here can start it for them. Music.app's AppleScript dictionary only
+# reaches the library: `search` takes a playlist, `add` takes local files, and
+# `play` takes a library specifier — none of them address a catalog result. The
+# `open location` URL from the iTunes Search API carries a storefront-specific
+# track id, which an account in another storefront refuses, so `play` afterwards
+# has nothing queued. Driving the window with System Events would work, but it
+# moves the real cursor and needs Accessibility permission, which is too
+# intrusive for a music command.
+open_in_music() {
+  music "open location \"$1\"" >/dev/null 2>&1
+}
+
+art() { "$(dirname "$0")/player-art" "${1:-12}"; }
+
+cmd="${1:-now}"; shift || true
+case "$cmd" in
+  play)
+    if [[ $# -eq 0 ]]; then music play >/dev/null; now; exit; fi
+    q="$*"
+    # Rank library and catalog together, so a strong catalog match can beat a
+    # weak library one instead of the library always winning by default.
+    ranked="$("$(dirname "$0")/player-search" --json "$q" 2>/dev/null || true)"
+    if [[ -n "$ranked" ]]; then
+      if [[ "$(pick "$ranked" count)" == "0" ]]; then
+        echo "no match for '$q'"
+        exit 1
+      fi
+      if [[ "$(pick "$ranked" decisive)" != "yes" ]]; then
+        echo "'$q' is ambiguous — pick one:"
+        "$(dirname "$0")/player-search" "$q"
+        echo "then: player play \"<title> - <artist>\""
+        exit
+      fi
+      title="$(pick "$ranked" title)"
+      artist="$(pick "$ranked" artist)"
+      url="$(pick "$ranked" url)"
+      if [[ "$(pick "$ranked" source)" == "library" ]]; then
+        r="$(play_library_exact "$title" "$artist")"
+        if [[ "$r" != "NOMATCH" ]]; then echo "▶ $r"; exit; fi
+      fi
+      # Best hit is in the catalog. Hand Music.app the title alone: its search
+      # matches a plain title far better than a title glued to an artist name
+      # (which may carry quotes, "&" or a featuring credit).
+      q="$title"
+    fi
+    r="$(play_library "$q")"
+    if [[ "$r" != "NOMATCH" ]]; then echo "▶ $r"; exit; fi
+    # Not in the library. The best we can do is put it on screen (see
+    # open_in_music for why playback cannot be started from here).
+    if [[ -n "${url:-}" ]]; then
+      open_in_music "$url"
+      echo "not in your library: $title — $artist"
+      echo "opened in Music.app — press play there, or + to add it"
+      echo "(once it is in your library, player play starts it directly)"
+    else
+      echo "no match for '$q'"
+    fi ;;
+  playlist)  music "play playlist \"$*\"" >/dev/null; now ;;
+  playlists) music "get name of every playlist" | tr ',' '\n' | sed 's/^ *//' ;;
+  pause)     music pause ;;
+  stop)      music stop ;;
+  toggle)    music playpause >/dev/null; now ;;
+  next)      music "next track" >/dev/null; now ;;
+  prev|previous) music "previous track" >/dev/null; now ;;
+  seek)      music "set player position to $1" >/dev/null; now ;;
+  volume)    if [[ $# -eq 0 ]]; then music "sound volume"; else music "set sound volume to $1"; fi ;;
+  shuffle)   case "${1:-}" in on) music "set shuffle enabled to true";; off) music "set shuffle enabled to false";; *) music "shuffle enabled";; esac ;;
+  repeat)    if [[ $# -eq 0 ]]; then music "song repeat as text"; else music "set song repeat to $1"; fi ;;
+  now)       now "${1:-}" ;;
+  ui)        exec "$(dirname "$0")/player-ui" ;;
+  status)    track_json; echo ;;
+  art)       art "${1:-12}" ;;
+  search)    "$(dirname "$0")/player-search" "$*" ;;
+  search-library) search_library "$*" ;;
+  catalog)   catalog "$*" ;;
+  open)      open_catalog "$*" ;;
+  -h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac

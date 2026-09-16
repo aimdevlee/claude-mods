@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""player-search — find a song across the local library and the Apple Music catalog.
+
+Music.app's `search` and the iTunes Search API both answer with a bag of loosely
+related tracks in no useful order: asking for "yesterday" can put a live cover
+above the studio original. This module scores every candidate against the query
+and merges both sources into one ranking, so `player play` can start the track a
+person actually meant.
+
+Scoring is deliberately blunt and explainable — exact title beats prefix beats
+substring, a matching artist adds to that, and alternate takes (live, remix,
+karaoke) lose points unless the query asked for one. Library tracks get a small
+bonus because they are already downloaded and always playable, while a catalog
+hit may not be in the account's storefront at all.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import unicodedata
+import urllib.parse
+import urllib.request
+
+# A candidate this far ahead of the runner-up is safe to play without asking.
+DECISIVE_MARGIN = 20
+
+# Words that mark an alternate take. Penalised unless the query mentions them,
+# so "yesterday" prefers the studio cut but "yesterday live" still finds it.
+VARIANT_WORDS = (
+    "live", "remix", "karaoke", "instrumental", "cover", "acoustic",
+    "demo", "edit", "mix", "version", "remaster", "remastered", "radio",
+)
+
+# "title - artist" / "title by artist" — lets a query name both fields.
+SPLIT_RE = re.compile(r"\s+(?:-|–|—|by|/)\s+", re.IGNORECASE)
+
+
+def norm(s):
+    """Casefold, strip accents and punctuation, collapse spaces.
+
+    Lets "Don't Stop Me Now" match "Dont Stop Me Now" and NFD-composed Hangul
+    from Music.app match NFC text from the catalog API.
+    """
+    s = unicodedata.normalize("NFKC", s or "").casefold()
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    # Apostrophes vanish rather than split, so "Don't" matches "Dont";
+    # every other punctuation mark becomes a word break.
+    s = re.sub(r"['\u2019\u02bc`]", "", s)
+    s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_query(q):
+    """Split a query into (title, artist). Artist is '' when not given."""
+    parts = SPLIT_RE.split(q, maxsplit=1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        return parts[0].strip(), parts[1].strip()
+    return q.strip(), ""
+
+
+def score(cand, title_q, artist_q, raw_q):
+    """Rank one candidate. Higher is better; see module docstring."""
+    t, a = norm(cand.get("title")), norm(cand.get("artist"))
+    tq, aq, rq = norm(title_q), norm(artist_q), norm(raw_q)
+    if not tq:
+        return 0
+
+    if t == tq:
+        s = 100
+    elif t.startswith(tq):
+        s = 80
+    elif tq in t:
+        s = 60
+    elif all(w in t for w in tq.split()):
+        s = 45          # all words present but scattered
+    else:
+        # No title match. The whole query may name the artist instead
+        # ("queen"), which is a weak but real hit.
+        s = 20 if (rq and rq in a) else 0
+    if not s:
+        return 0
+
+    if aq:
+        if a == aq:
+            s += 40
+        elif aq in a or a in aq:
+            s += 25
+        else:
+            s -= 25     # query named an artist and this is not them
+    elif rq and rq not in t and rq in f"{t} {a}":
+        s += 10         # unsplit query matched once artist is included
+
+    # Alternate takes lose ground unless the query asked for one.
+    extra = t[len(tq):] if t.startswith(tq) else t
+    for w in VARIANT_WORDS:
+        if w in extra.split() and w not in rq.split():
+            s -= 30
+            break
+
+    if cand.get("source") == "library":
+        s += 15         # already downloaded, guaranteed playable
+    return s
+
+
+def search_library(query):
+    """Ask Music.app what it can play. Returns [] if Music.app is unusable.
+
+    Music.app's `search` takes one playlist, so searching only `library playlist
+    1` misses every subscription playlist — the Apple Music mixes are `shared
+    track`s that live outside the library yet play through AppleScript like any
+    owned song. Walk every playlist and record which one each hit came from, so
+    playback can name the playlist it belongs to.
+    """
+    script = """
+on run argv
+  tell application "Music"
+    set out to {}
+    repeat with pl in (get every playlist)
+      try
+        repeat with t in (search pl for (item 1 of argv))
+          try
+            set end of out to (name of t) & tab & (artist of t) & tab & ¬
+              (album of t) & tab & (name of pl)
+          end try
+        end repeat
+      end try
+    end repeat
+    set AppleScript's text item delimiters to linefeed
+    return out as text
+  end tell
+end run
+"""
+    try:
+        r = subprocess.run(["osascript", "-", query], input=script,
+                           capture_output=True, text=True, timeout=20)
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if r.returncode != 0:
+        return []
+    out = []
+    seen = set()
+    for line in r.stdout.strip().splitlines():
+        f = line.split("\t")
+        if len(f) >= 3 and f[0].strip():
+            # The same song sits in several playlists; keep the first.
+            k = (f[0], f[1])
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append({"title": f[0], "artist": f[1], "album": f[2],
+                        "source": "library", "url": "",
+                        "playlist": f[3] if len(f) > 3 else ""})
+    return out
+
+
+def search_catalog(query, limit=10):
+    """Ask the iTunes Search API. Returns [] on any network or parse failure."""
+    cc = os.environ.get("PLAYER_COUNTRY", "US")
+    url = ("https://itunes.apple.com/search?"
+           + urllib.parse.urlencode({"term": query, "entity": "song",
+                                     "limit": limit, "country": cc}))
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.load(resp)
+    except Exception:
+        return []
+    out = []
+    for rank_i, r in enumerate(data.get("results", [])):
+        out.append({
+            "title": r.get("trackName", ""),
+            "artist": r.get("artistName", ""),
+            "album": r.get("collectionName", ""),
+            "source": "catalog",
+            "url": (r.get("trackViewUrl") or "").replace("&uo=4", ""),
+            # The API returns roughly-popularity-ordered results; keep that
+            # order to break ties between covers the scorer rates equally.
+            "_api_rank": rank_i,
+        })
+    return out
+
+
+def dedupe(cands):
+    """Collapse the same song found in both sources, keeping the better score."""
+    best = {}
+    for c in cands:
+        k = (norm(c["title"]), norm(c["artist"]))
+        if k not in best or c["_score"] > best[k]["_score"]:
+            best[k] = c
+    return list(best.values())
+
+
+def find(query, limit=5):
+    """Search both sources and return candidates, best first."""
+    title_q, artist_q = parse_query(query)
+    cands = search_library(query) + search_catalog(query)
+    for c in cands:
+        c["_score"] = score(c, title_q, artist_q, query)
+    cands = [c for c in cands if c["_score"] > 0]
+    # Library first on a tie: it is guaranteed playable. Then the catalog's
+    # own popularity order, so "yesterday" lands on the Beatles, not a cover.
+    cands.sort(key=lambda c: (-c["_score"], c["source"] != "library",
+                              c.get("_api_rank", 999)))
+    return dedupe(cands)[:limit]
+
+
+def decisive(cands):
+    """True when the top hit is safe to play without asking.
+
+    Either it outscores the runner-up, or it is a perfect title match that only
+    ties with other artists' covers — in which case the catalog's popularity
+    order already picked the canonical recording and asking adds nothing.
+    """
+    if not cands:
+        return False
+    top = cands[0]
+    # Only a real title match is ever played unhesitatingly. A partial hit
+    # ("Monster Mash" for "monster m") can outscore everything else and still
+    # be the wrong song, so leading the field is not on its own enough.
+    if top["_score"] < 100:
+        return False
+    if len(cands) == 1:
+        return True
+    # Owning the track settles it. Covers in the catalog score the same 100 for
+    # the title, so the margin alone would never clear and every song already in
+    # the library would ask before playing.
+    if top["source"] == "library":
+        return True
+    if top["_score"] - cands[1]["_score"] >= DECISIVE_MARGIN:
+        return True
+    # Tied covers: trust the ordering, but only for an unambiguous exact match
+    # that came first in the catalog's own ranking.
+    return top["_score"] >= 100 and top.get("_api_rank", 999) == 0
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "--json":
+        cands = find(" ".join(argv[1:]))
+        print(json.dumps({"decisive": decisive(cands), "results": cands},
+                         ensure_ascii=False))
+        return 0
+    if not argv:
+        print("usage: player-search [--json] <query>", file=sys.stderr)
+        return 2
+    cands = find(" ".join(argv))
+    if not cands:
+        print(f"no match for '{' '.join(argv)}'")
+        return 1
+    for i, c in enumerate(cands, 1):
+        mark = "*" if c["source"] == "library" else " "
+        album = f" [{c['album']}]" if c["album"] else ""
+        print(f"{i:>2} {mark} {c['title']} — {c['artist']}{album}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
