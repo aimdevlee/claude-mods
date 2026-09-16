@@ -47,13 +47,19 @@ tell application "Music"
     set currentVolume to sound volume
     set shuffleOn to shuffle enabled
     set repeatMode to song repeat as text
-    -- Extras the full-size band shows. A streaming track leaves most of these
-    -- empty or zero (an Apple Music URL track reports year 0 and no play
-    -- count), so each is emitted only when it actually holds something and the
-    -- band simply omits what is missing.
+    -- Extras the full-size band shows. Which ones are worth asking for was
+    -- measured over a 149-track library: genre, year and the track number are
+    -- filled for every `file track`, while `played count` was set on 3 of 149
+    -- (a subscription track's plays do not accrue locally) and `bpm` and
+    -- `rating` on none, so those are not asked for at all.
+    --
+    -- A playing `URL track` is the thin case: it reports its genre but answers
+    -- 0 for the year and the track number. So each field is emitted only when
+    -- it holds something, and the band omits whatever did not arrive.
     set trackGenre to ""
     set trackYear to 0
-    set trackPlays to 0
+    set trackNumber to 0
+    set trackTotal to 0
     try
       set trackGenre to genre of theTrack
     end try
@@ -61,7 +67,10 @@ tell application "Music"
       set trackYear to year of theTrack
     end try
     try
-      set trackPlays to played count of theTrack
+      set trackNumber to track number of theTrack
+    end try
+    try
+      set trackTotal to track count of theTrack
     end try
   on error
     return "{\"state\":\"" & playerState & "\"}"
@@ -75,7 +84,8 @@ tell application "Music"
   set extras to ""
   if trackGenre is not "" then set extras to extras & ",\"genre\":\"" & trackGenre & "\""
   if trackYear > 0 then set extras to extras & ",\"year\":" & trackYear
-  if trackPlays > 0 then set extras to extras & ",\"plays\":" & trackPlays
+  if trackNumber > 0 then set extras to extras & ",\"track\":" & trackNumber
+  if trackTotal > 0 then set extras to extras & ",\"tracks\":" & trackTotal
   return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"" & extras & "}"
 end tell
 AS

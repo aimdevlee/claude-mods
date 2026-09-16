@@ -81,12 +81,14 @@ type Track = {
   volume?: number
   shuffle?: boolean
   repeat?: string
-  // Extras the CLI emits only when the track actually carries them: a
-  // streaming track usually has a genre and nothing else, a ripped one has all
-  // three. The full-size band shows what arrived and omits the rest.
+  // Extras the CLI emits only when the track actually carries them. Measured
+  // over a 149-track library: a `file track` fills all of these, while a
+  // playing `URL track` reports its genre and answers 0 for the rest. The
+  // full-size band shows what arrived and omits the rest.
   genre?: string
   year?: number
-  plays?: number
+  track?: number
+  tracks?: number
 }
 
 type Host = {
@@ -248,17 +250,22 @@ export function bylineOf(track: Track): string {
 }
 
 /**
- * The extras row full mode adds: genre, year and play count, whichever of them
- * Music.app reported. A streaming track usually answers with the genre alone,
- * so this is often one word — and empty when it is not even that, in which
- * case the caller drops the row rather than drawing a blank one.
+ * The extras row full mode adds: genre, year and the track's place on its
+ * album, whichever of them Music.app reported. A playing stream answers with
+ * the genre alone, so this is often one word — and empty when it is not even
+ * that, in which case the caller drops the row rather than drawing a blank one.
+ *
+ * The track number is shown as `3/6` only when the total came too; a bare
+ * `3` beside a genre reads as a number with no unit.
  */
 export function metaLineOf(track: Track): string {
-  const plays = track.plays ?? 0
+  const year = track.year ?? 0
+  const n = track.track ?? 0
+  const total = track.tracks ?? 0
   return [
     track.genre,
-    track.year !== undefined && track.year > 0 ? String(track.year) : '',
-    plays > 0 ? `♥ ${plays}회 재생` : '',
+    year > 0 ? String(year) : '',
+    n > 0 && total > 0 ? `${n}/${total}곡` : '',
   ]
     .filter(Boolean)
     .join(' · ')

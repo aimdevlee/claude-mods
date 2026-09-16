@@ -15,7 +15,8 @@ const PLAYING = JSON.stringify({
   repeat: 'off',
   genre: 'K-Pop',
   year: 2019,
-  plays: 12,
+  track: 3,
+  tracks: 6,
 })
 
 const BAND: RenderInput<'AbovePrompt'> = {
@@ -416,7 +417,7 @@ describe('player band', () => {
     expect(drawn, 'and titles it').toContain('APPLE MUSIC')
     expect(drawn, 'the byline stays').toContain('리센느 — SCENEDROME - EP')
     expect(drawn, 'and full adds the extras the other modes have no room for')
-      .toContain('K-Pop · 2019 · ♥ 12회 재생')
+      .toContain('K-Pop · 2019 · 3/6곡')
   })
 
   test('full shows only the extras Music.app actually reported', async ($, on) => {
@@ -427,7 +428,8 @@ describe('player band', () => {
       ...JSON.parse(PLAYING),
       genre: 'K-Pop',
       year: undefined,
-      plays: undefined,
+      track: undefined,
+      tracks: undefined,
     })
     const w = world(on, streaming)
 
@@ -437,13 +439,29 @@ describe('player band', () => {
     await w.clock.settle()
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
-    expect(drawn, 'the genre is what a streaming track has').toContain('K-Pop')
-    expect(drawn, 'a missing year must not print as a zero').not.toContain('0년')
-    expect(drawn, 'nor a missing play count as an empty heart').not.toContain('♥')
+    expect(drawn, 'the genre is what a playing stream has').toContain('K-Pop')
+    expect(drawn, 'a missing year must not print as a zero').not.toContain('2019')
+    expect(drawn, 'nor a missing track number as a bare slash').not.toContain('곡')
+  })
+
+  test('a track number with no album total is left out', async ($, on) => {
+    // `3` beside a genre reads as a number with no unit, so the pair is shown
+    // only when both halves arrived.
+    const partial = JSON.stringify({ ...JSON.parse(PLAYING), tracks: undefined })
+    const w = world(on, partial)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('full'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'the genre and year still show').toContain('K-Pop · 2019')
+    expect(drawn, 'but the half-known pair does not').not.toContain('곡')
   })
 
   test('a track with no extras at all drops the row instead of drawing it blank', async ($, on) => {
-    const { genre, year, plays, ...bare } = JSON.parse(PLAYING)
+    const { genre, year, track, tracks, ...bare } = JSON.parse(PLAYING)
     const w = world(on, JSON.stringify(bare))
 
     await $.session.start(SESSION)
