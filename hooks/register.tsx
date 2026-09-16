@@ -172,7 +172,7 @@ function parseTrack(text: string): Track {
 }
 
 const mmss = (seconds: number) => {
-  const s = Math.max(0, Math.floor(seconds))
+  const s = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
@@ -191,18 +191,28 @@ const cellWidth = (ch: string) => {
   return wide ? 2 : 1
 }
 
-const widthOf = (text: string) => [...text].reduce((n, ch) => n + cellWidth(ch), 0)
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
+const graphemeWidth = (text: string) => {
+  if (/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(text)) return 2
+  return [...text].reduce((n, ch) => n + (/\p{Mark}|\u200d/u.test(ch) ? 0 : cellWidth(ch)), 0)
+}
+export const widthOf = (text: string) =>
+  [...graphemes.segment(text)].reduce((n, { segment }) => n + graphemeWidth(segment), 0)
 
-function clip(text: string, width: number): string {
+export function clip(text: string, width: number): string {
+  text = clean(text)
+  if (width <= 0) return ''
+  if (widthOf(text) <= width) return text
   let out = ''
   let used = 0
-  for (const ch of text) {
-    const w = cellWidth(ch)
-    if (used + w > width) return out.length < text.length ? out.slice(0, -1) + '…' : out
-    out += ch
+  for (const { segment } of graphemes.segment(text)) {
+    const w = graphemeWidth(segment)
+    if (used + w > width - 1) break
+    out += segment
     used += w
   }
-  return out
+  return out + '…'
 }
 
 export const iconOf = (track: Track) =>
@@ -250,11 +260,12 @@ export function trackLineOf(
   density: Density = DEFAULT_DENSITY,
 ): { left: string; bar: string; right: string } {
   if (track.title === undefined) {
-    return { left: '■ Apple Music: nothing playing', bar: '', right: '' }
+    return { left: clip('■ Apple Music: nothing playing', columns), bar: '', right: '' }
   }
-  const position = track.position ?? 0
-  const duration = track.duration ?? 0
-  const clock = `${mmss(position)} / ${mmss(duration)}`
+  const { position, duration } = timesOf(track)
+  // The clock is the last thing to go, but it goes: a terminal narrower than
+  // it has no room for a title either, and an unclipped one overflows the band.
+  const clock = clip(`${mmss(position)} / ${mmss(duration)}`, columns)
   // Compact has no byline row, so the artist rides here or goes unsaid.
   const name = DENSITIES[density].byline
     ? track.title
@@ -263,13 +274,36 @@ export function trackLineOf(
   const spare = columns - widthOf(clock) - widthOf(title) - 3
   const barWidth = Math.min(DENSITIES[density].meter, Math.max(0, spare))
   const bar = barWidth >= 6 ? meterOf(duration > 0 ? position / duration : 0, barWidth) : ''
-  const left = clip(title, Math.max(10, columns - widthOf(clock) - widthOf(bar) - 3))
+  // No floor: `clip` handles a width of 0, and forcing ten cells on a terminal
+  // that has three makes the row overflow the band instead of truncating.
+  const left = clip(title, Math.max(0, columns - widthOf(clock) - widthOf(bar) - 3))
   return { left, bar, right: clock }
 }
 
 /** `artist — album`, the pair that names a track apart from its title. */
 export function bylineOf(track: Track): string {
   return [track.artist, track.album].filter(Boolean).join(' — ')
+}
+
+/**
+ * Reserve padding, the cover and its gutter before any text is fitted, and say
+ * whether the cover fits at all: a narrow terminal drops it rather than letting
+ * it crowd the title out. `art: 0` modes (compact) never carry one.
+ *
+ * Widths come from what is left after the engine's collapse mark (`[-]`), so
+ * the caller passes `props.bodyColumns` and gets back what each part may use.
+ */
+export function layoutOf(bodyColumns: number, density: Density = DEFAULT_DENSITY) {
+  const art = DENSITIES[density].art
+  const outer = Math.max(0, Math.floor(bodyColumns) - 6)
+  const padding = outer >= 4 ? 1 : 0
+  const inner = outer - padding * 2
+  // The cover plus its gutter, and enough left over for a title and a clock.
+  const showArt = art > 0 && inner >= art + 2 + 40
+  // No floor: claiming a width the outer Box does not have makes the rows
+  // overflow it, which is what a floor of 20 did at 8-30 columns.
+  const columns = Math.max(0, inner - (showArt ? art + 2 : 0))
+  return { outer, padding, showArt, columns }
 }
 
 /**
@@ -290,7 +324,7 @@ export function detailRowsOf(
   if (mode.byline) {
     const byline = bylineOf(track)
     if (byline !== '') {
-      rows.push({ left: clip(byline, Math.max(10, columns - 2)), bar: '', right: '' })
+      rows.push({ left: clip(byline, Math.max(0, columns - 2)), bar: '', right: '' })
     }
   }
   if (mode.modes) {
@@ -305,9 +339,43 @@ export function detailRowsOf(
     ]
       .filter(Boolean)
       .join('  ')
-    rows.push({ left: modes, bar, right: `vol ${volume}` })
+    // The row is `modes  bar  vol N`. The volume is the part worth keeping when
+    // it will not all fit: shuffle and repeat have buttons of their own below.
+    const label = `vol ${volume}`
+    const room = Math.max(0, columns - widthOf(bar) - widthOf(label) - 4)
+    rows.push({ left: clip(modes, room), bar, right: clip(label, Math.max(0, columns)) })
   }
   return rows
+}
+
+/**
+ * Position and duration as numbers the rest of the band can trust: the CLI has
+ * reported a non-finite duration (a stream), and a position past the end, and
+ * both divide into a meter that is NaN cells wide.
+ */
+export function timesOf(track: Track): { position: number; duration: number } {
+  const duration = Number.isFinite(track.duration) ? Math.max(0, track.duration ?? 0) : 0
+  const position = Number.isFinite(track.position)
+    ? Math.max(0, Math.min(track.position ?? 0, duration || Infinity))
+    : 0
+  return { position, duration }
+}
+
+/**
+ * A meter and a clock that together fit `columns`, whatever the CLI reported.
+ *
+ * The band builds its own rows from `trackLineOf`, which has a mode to honour;
+ * this is the same arithmetic without one, so the fit can be checked directly
+ * rather than inferred from a rendered tree.
+ */
+export function progressOf(track: Track, columns: number): { meter: string; time: string } {
+  const { position, duration } = timesOf(track)
+  const time = `${mmss(position)} / ${mmss(duration)}`
+  const width = Math.min(40, Math.max(0, columns - widthOf(time) - 2))
+  return {
+    meter: meterOf(duration > 0 ? position / duration : 0, width),
+    time: clip(time, columns),
+  }
 }
 
 /**
@@ -516,15 +584,19 @@ export const register: Register = on => {
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
     const mode = DENSITIES[density]
     // Leave the right edge to the engine's collapse mark (`[-]`).
-    const outer = Math.max(20, e.props.bodyColumns - 6)
+    // `layoutOf` reserves the padding and the cover before any text is fitted,
+    // and drops the cover on a terminal too narrow to carry it beside a title.
+    const { outer, padding, showArt, columns } = layoutOf(e.props.bodyColumns, density)
     // Compact draws no cover at all; the other modes give a track without
     // artwork a plate the same size, so the band does not change height or
     // reflow as the artwork comes and goes between songs.
-    const cover = mode.art === 0 ? undefined : art ?? placeholderArt(mode.art, mode.rows)
-    // The art takes its columns plus a gap; the text rows get what is left.
-    const columns = Math.max(20, outer - (cover === undefined ? 0 : cover.columns + 2))
+    const cover = showArt ? art ?? placeholderArt(mode.art, mode.rows) : undefined
     const { left, bar, right } = trackLineOf(track, columns, density)
-    const volume = track.volume ?? 50
+    // Music.app has reported a volume outside 0-100 and a fractional one; the
+    // meter divides by it, so it is clamped before anything draws.
+    const volume = Number.isFinite(track.volume)
+      ? Math.max(0, Math.min(100, Math.round(track.volume ?? 50)))
+      : 50
     // The filled run keeps the foreground colour and only the remainder is
     // dimmed, which is what makes the level legible; dimming the whole bar
     // flattened it into one grey slab on a real terminal.
@@ -545,9 +617,12 @@ export const register: Register = on => {
     // Every transport label is a glyph of the same family, so the row reads as
     // one control strip rather than icons and words side by side; a mode that
     // is on is marked by colour, not by the label growing and shifting the row.
+    // A mode that is off is dimmed and one that is on is drawn at full
+    // strength. `ButtonProps` has no `color`, only `dimColor`, so an earlier
+    // `color="success"` here did nothing at all — the engine dropped it.
     const key = (name: string, label: string, opts: { on?: boolean } = {}) =>
       (...args: string[]) => (
-        <Button key={name} color={opts.on === true ? 'success' : undefined} onPress={press(...args)}>
+        <Button key={name} dimColor={opts.on === false} onPress={press(...args)}>
           {label}
         </Button>
       )
@@ -561,12 +636,33 @@ export const register: Register = on => {
     // `seek` takes an absolute position, so a skip is worked out from where the
     // track is now, clamped to its ends: seeking past the duration would end
     // the track, which is what ▶▶ is for, and a negative rewinds to nothing.
-    const skipTo = (by: number) =>
-      String(Math.max(0, Math.min((track.duration ?? 0) - 1, (track.position ?? 0) + by)))
+    const skipTo = (by: number) => {
+      const { position, duration } = timesOf(track)
+      return String(Math.max(0, Math.min(duration - 1, position + by)))
+    }
+
+    // A gap costs cells too: at two columns a `gap={2}` between two children
+    // spends the whole row on whitespace, so the gaps close as the band does.
+    const gap = columns >= 40 ? 2 : columns >= 12 ? 1 : 0
+
+    // A Button costs its label plus the host's `[ ]` chrome, and the row adds a
+    // gap between each. On a terminal too narrow for all of them the row would
+    // overflow the band rather than wrap, so they drop in order of how little
+    // is lost: the modes first, then volume, then the skips, then the track
+    // changes. Play and the size toggle always draw — one is the point of the
+    // band and the other is the way out of it — below even their width the row
+    // draws nothing, since a terminal that narrow has no room for a control.
+    const cost = (label: string) => widthOf(label) + 4 + 1
+    const ALWAYS = cost('‖') + cost('▼')
+    const TRACK_W = ALWAYS + cost('◀◀') + cost('▶▶')
+    const SKIP_W = TRACK_W + cost('◀') + cost('▶')
+    const VOL_W = SKIP_W + cost('−') + cost('+')
+    const MODE_W = VOL_W + cost('⇄') + cost('↻1')
+    const fits = (need: number) => columns >= need
 
     const buttons = (
       <Box gap={1}>
-        {key('prev', '◀◀')('prev')}
+        {fits(TRACK_W) ? key('prev', '◀◀')('prev') : null}
         {/*
           Ten seconds either way rather than a click on the bar: `ui.press`
           carries `{ plugin, element, component, surface }` and no coordinate,
@@ -577,18 +673,18 @@ export const register: Register = on => {
           A skip is one triangle and a track change two, so the pair reads as
           degrees of the same move rather than as two unrelated icons.
         */}
-        {key('back', '◀')('seek', skipTo(-SKIP_SECONDS))}
-        {key('play', track.state === 'playing' ? '‖' : '▶')('toggle')}
-        {key('forward', '▶')('seek', skipTo(SKIP_SECONDS))}
-        {key('next', '▶▶')('next')}
+        {fits(SKIP_W) ? key('back', '◀')('seek', skipTo(-SKIP_SECONDS)) : null}
+        {fits(ALWAYS) ? key('play', track.state === 'playing' ? '‖' : '▶')('toggle') : null}
+        {fits(SKIP_W) ? key('forward', '▶')('seek', skipTo(SKIP_SECONDS)) : null}
+        {fits(TRACK_W) ? key('next', '▶▶')('next') : null}
         {/*
           Compact has one line for everything, so it keeps only the transport
           and the hide button: volume, shuffle and repeat are a `/player`
           command away and would crowd the row they share with the title.
         */}
-        {mode.modes ? key('vol-', '−')('volume', String(Math.max(0, volume - 5))) : null}
-        {mode.modes ? key('vol+', '+')('volume', String(Math.min(100, volume + 5))) : null}
-        {mode.modes
+        {mode.modes && fits(VOL_W) ? key('vol-', '−')('volume', String(Math.max(0, volume - 5))) : null}
+        {mode.modes && fits(VOL_W) ? key('vol+', '+')('volume', String(Math.min(100, volume + 5))) : null}
+        {mode.modes && fits(MODE_W)
           ? key('shuffle', '⇄', { on: track.shuffle === true })(
               'shuffle',
               track.shuffle === true ? 'off' : 'on',
@@ -599,7 +695,7 @@ export const register: Register = on => {
           the two on states it is in; the `1` does, as `🔂` used to before the
           font turned it into a coloured badge.
         */}
-        {mode.modes
+        {mode.modes && fits(MODE_W)
           ? key('repeat', repeat === 'one' ? '↻1' : '↻', { on: repeat !== 'off' })(
               'repeat',
               repeats[repeat],
@@ -612,18 +708,20 @@ export const register: Register = on => {
           lands, and it goes when Music.app stops, not before — so the label
           points at the size it would move to rather than at an exit.
         */}
-        <Button
-          key="size"
-          dimColor
-          onPress={() => {
-            density = density === 'compact' ? 'normal' : 'compact'
-            isShown = density !== 'compact'
-            engine.invalidate()
-            engine.status(rowFor(track))
-          }}
-        >
-          {mode.modes ? '▼' : '▲'}
-        </Button>
+        {fits(ALWAYS) ? (
+          <Button
+            key="size"
+            dimColor
+            onPress={() => {
+              density = density === 'compact' ? 'normal' : 'compact'
+              isShown = density !== 'compact'
+              engine.invalidate()
+              engine.status(rowFor(track))
+            }}
+          >
+            {mode.modes ? '▼' : '▲'}
+          </Button>
+        ) : null}
       </Box>
     )
 
@@ -632,7 +730,7 @@ export const register: Register = on => {
     if (mode.art === 0) {
       return (
         <Box width={outer} flexDirection="column" paddingX={1}>
-          <Box gap={2}>
+          <Box gap={gap}>
             <Text bold={track.state === 'playing'}>{left}</Text>
             {meter(bar)}
             <Text dimColor>{right}</Text>
@@ -648,14 +746,14 @@ export const register: Register = on => {
     // reading as a pair, and the band became scattered pieces instead of one
     // block. A gap keeps them together, the way compact already does.
     const body = (
-      <Box flexDirection="column">
-        <Box gap={2}>
+      <Box flexDirection="column" width={columns} flexShrink={0}>
+        <Box gap={gap}>
           <Text bold={track.state === 'playing'}>{left}</Text>
           {meter(bar)}
           <Text dimColor>{right}</Text>
         </Box>
         {details.map((row, i) => (
-          <Box key={`detail-${i}`} gap={2}>
+          <Box key={`detail-${i}`} gap={gap}>
             {row.left !== '' ? <Text dimColor>{row.left}</Text> : null}
             {meter(row.bar)}
             {row.right !== '' ? <Text dimColor>{row.right}</Text> : null}
@@ -667,9 +765,16 @@ export const register: Register = on => {
     )
 
     return (
-      <Box width={outer} paddingX={1} gap={1}>
+      <Box width={outer} paddingX={padding} gap={1}>
+        {/*
+          The Raster is boxed to the size the mode asks for and clipped: the
+          export rounds to whole cells, so a cover can come back a row taller
+          than the band and push the text down a line.
+        */}
         {cover !== undefined ? (
-          <Raster key="cover" columns={cover.columns} rows={cover.rows} cells={cover.cells} />
+          <Box width={mode.art} height={mode.rows} flexShrink={0} overflow="hidden">
+            <Raster key="cover" columns={cover.columns} rows={cover.rows} cells={cover.cells} />
+          </Box>
         ) : null}
         {body}
       </Box>

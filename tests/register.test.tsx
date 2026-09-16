@@ -1,5 +1,7 @@
-import type { On, RenderElement, RenderInput } from 'claude-code'
+import type { On, RenderElement, RenderInput, RenderNode } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
+
+import { clip, layoutOf, progressOf, widthOf } from '../hooks/register'
 
 tier('user')
 
@@ -95,6 +97,53 @@ function world(on: On, status = PLAYING, art = ART) {
 }
 
 const verbs = (runs: (readonly string[])[]) => runs.map(argv => argv[1])
+
+function elements(node: RenderNode | undefined): RenderElement[] {
+  if (node === undefined || typeof node === 'string') return []
+  return [node, ...('children' in node ? (node.children ?? []).flatMap(elements) : [])]
+}
+
+// Measure the emitted tree, including the host's documented `[ label ]`
+// button chrome. This catches overflowing groups, not just clipped strings.
+function fittedWidth(node: RenderNode | undefined, available: number): number {
+  if (node === undefined) return 0
+  if (typeof node === 'string') return widthOf(node)
+  if (node.type === 'Button') return widthOf(node.props.label) + 4
+  if (node.type === 'Raster') return node.props.columns
+  if (node.type !== 'Box' && node.type !== 'Text') return 0
+  const props = node.props ?? {}
+  const width = typeof props.width === 'number' ? props.width : available
+  const padding = typeof props.paddingX === 'number' ? props.paddingX * 2 : 0
+  const children = node.children ?? []
+  const sizes = children.map(child => fittedWidth(child, Math.max(0, width - padding)))
+  const gap = typeof props.gap === 'number' ? props.gap : 0
+  const content = props.flexDirection === 'column'
+    ? Math.max(0, ...sizes)
+    : sizes.reduce((a, b) => a + b, 0) + Math.max(0, sizes.length - 1) * gap
+  expect(content + padding, `${node.type} must fit ${width} cells`).toBeLessThanOrEqual(width)
+  return typeof props.width === 'number' ? props.width : content + padding
+}
+
+describe('band layout', () => {
+  test('long Unicode titles keep complete graphemes and fit their cells', () => {
+    expect(clip('가나다라', 5)).toBe('가나…')
+    expect(clip('🎧🎵 music', 4)).toBe('🎧…')
+    expect(clip('e\u0301clair', 3)).toBe('e\u0301c…')
+    expect(clip('👨‍👩‍👧‍👦 family', 3)).toBe('👨‍👩‍👧‍👦…')
+    expect(clip('track\nname', 20)).toBe('track name')
+    expect(clip('title', 0)).toBe('')
+  })
+
+  test('progress handles unknown duration, seek overshoot and tiny windows', () => {
+    expect(progressOf({ state: 'playing', duration: 100, position: 150 }, 30).time).toBe('1:40 / 1:40')
+    const unknown = progressOf({ state: 'playing', duration: 0, position: 5 }, 30)
+    expect(unknown.meter).not.toContain('█')
+    for (let columns = 0; columns <= 160; columns += 1) {
+      const row = progressOf({ state: 'paused', duration: 181, position: 82 }, columns)
+      expect(widthOf(row.meter) + widthOf(row.time)).toBeLessThanOrEqual(columns)
+    }
+  })
+})
 
 describe('player band', () => {
   test('registers /player and polls Music.app every second', async ($, on) => {
@@ -207,7 +256,7 @@ describe('player band', () => {
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
     expect(drawn, 'the artist and album get their own row').toContain('리센느 — SCENEDROME - EP')
-    expect(drawn, 'the volume gets a meter, not just a number').toContain('vol 100')
+    expect(drawn, 'volume is next to its adjustment buttons').toContain('vol 100')
     expect(drawn, 'meters use block glyphs the cover proves the font has').toContain('█')
     expect(drawn, 'U+25AE fell back to tofu in a real session').not.toContain('▮')
     expect(drawn, 'U+25AF fell back to tofu in a real session').not.toContain('▯')
@@ -251,12 +300,9 @@ describe('player band', () => {
     // is not a number reaches the meter and divides to NaN.
     const odd = JSON.stringify({ ...JSON.parse(PLAYING), volume: 'loud' })
     const w = world(on, odd)
-
     await $.session.start(SESSION)
     await $.command.run(player())
-    await w.clock.advance(1000)
     await w.clock.settle()
-
     const drawn = JSON.stringify(await $.ui.render(BAND))
     // The meter is now two Texts, so match the row that carries the volume:
     // an empty filled half, the full remainder, and then the label. Eight is
@@ -716,5 +762,93 @@ describe('player band', () => {
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
     expect(drawn).toContain('nothing playing')
+  })
+
+  test('the title row and the progress row stay apart', async ($, on) => {
+    // A paused track with no artist: the byline row goes, but the title must
+    // not absorb the clock — they are separate columns of the same row, and a
+    // narrow terminal drops the meter between them rather than merging them.
+    const w = world(on, JSON.stringify({ ...JSON.parse(PLAYING), state: 'paused', artist: '', album: '' }))
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.settle()
+
+    const drawn = await $.ui.render(BAND)
+    const title = elements(drawn).find(
+      node => node.type === 'Text' && node.props?.bold === true,
+    )
+    expect(JSON.stringify(title), 'the title carries no clock').not.toContain('1:22')
+    expect(JSON.stringify(drawn), 'which lives in its own Text').toContain('1:22 / 3:01')
+    const play = elements(drawn).find(node => node.type === 'Button' && node.props.key === 'play')
+    expect(play?.props?.label, 'a paused track offers play').toBe('▶')
+  })
+
+  test('a narrow band keeps the transport and drops the cover', async ($, on) => {
+    const w = world(on)
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const renderAt = (columns: number) =>
+      $.ui.render({ ...BAND, props: { ...BAND.props, bodyColumns: columns } })
+
+    // `layoutOf` drops the cover before it lets one crowd out the title.
+    const narrow = JSON.stringify(await renderAt(50))
+    expect(narrow, 'no room for a cover beside the text').not.toContain('Raster')
+    expect(narrow, 'but the transport survives').toContain('"key":"next"')
+    expect(narrow, 'and so does the way back to compact').toContain('"key":"size"')
+
+    const wide = JSON.stringify(await renderAt(160))
+    expect(wide, 'a wide terminal carries the cover').toContain('Raster')
+  })
+
+  test('all rows fit at every width around the layout breakpoints', async ($, on) => {
+    const w = world(on, JSON.stringify({ ...JSON.parse(PLAYING),
+      title: '아주 긴 제목 🎧 👨‍👩‍👧‍👦 '.repeat(15),
+      artist: '아티스트'.repeat(15), album: 'Live Album'.repeat(15), shuffle: true, repeat: 'all',
+    }))
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.settle()
+    for (let columns = 8; columns <= 180; columns += 1) {
+      const drawn = await $.ui.render({ ...BAND, props: { ...BAND.props, bodyColumns: columns } })
+      try {
+        fittedWidth(drawn, layoutOf(columns, 'normal').outer)
+      } catch (err) {
+        // Name the width: the assertion alone says a Box overflowed, not which
+        // terminal size found it, and the fix differs at each breakpoint.
+        throw new Error(`at ${columns} columns: ${(err as Error).message}`)
+      }
+    }
+  })
+
+  test('shuffle marks its state by colour, and the size button folds the band', async ($, on) => {
+    const w = world(on, JSON.stringify({ ...JSON.parse(PLAYING), shuffle: true }))
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawn = await $.ui.render(BAND)
+    const shuffle = elements(drawn).find(
+      node => node.type === 'Button' && node.props.key === 'shuffle',
+    )
+    // Full strength rather than a longer label: `shuffle on` grew the row and
+    // shifted every button after it each time the mode changed. `ButtonProps`
+    // carries no `color`, so the mark is `dimColor` — off is dimmed.
+    expect(shuffle?.props?.label).toBe('⇄')
+    expect(shuffle?.props?.dimColor, 'shuffle on is not dimmed').toBe(false)
+
+    await $.ui.press({ plugin: 'player', key: 'shuffle' })
+    await w.clock.settle()
+    expect(w.runs.some(args => args[1] === 'shuffle' && args[2] === 'off')).toBe(true)
+
+    // Folding to compact leaves the track on screen, so the status row stays
+    // quiet rather than repeating it.
+    await $.ui.press({ plugin: 'player', key: 'size' })
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toBeUndefined()
+    expect(JSON.stringify(await $.ui.render(BAND)), 'compact draws no cover').not.toContain('Raster')
   })
 })
