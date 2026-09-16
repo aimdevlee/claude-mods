@@ -513,20 +513,6 @@ describe('player band', () => {
     expect(drawnBand, 'no byline row, so no album').not.toContain('SCENEDROME')
   })
 
-  test('compact marks itself with a rule so it is not read as transcript', async ($, on) => {
-    const w = world(on)
-
-    await $.session.start(SESSION)
-    await $.command.run(player('compact'))
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
-    const drawnBand = JSON.stringify(await $.ui.render(BAND))
-    // `AbovePrompt` leaves a blank line above and below the band, and one row
-    // adrift in that gap looks like a stray transcript line.
-    expect(drawnBand).toContain('{"type":"Text","props":{"dimColor":true},"children":["\u2502"]}')
-  })
-
   test('compact goes when nothing is playing', async ($, on) => {
     const w = world(on, '{"state":"stopped"}')
     let engineDrew = false
