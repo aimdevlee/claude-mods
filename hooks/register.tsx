@@ -81,7 +81,7 @@ export const DENSITIES: Record<Density, {
 // `/player` still opens the full band, and `/player compact` comes back here.
 const DEFAULT_DENSITY: Density = 'compact'
 
-// How far ⏪ and ⏩ move. Ten seconds is the step a podcast player uses: long
+// How far ◀ and ▶ move. Ten seconds is the step a podcast player uses: long
 // enough to be worth a click, short enough that two clicks are still a finer
 // move than dragging a bar eight cells wide could be.
 const SKIP_SECONDS = 10
@@ -560,46 +560,54 @@ export const register: Register = on => {
 
     // `seek` takes an absolute position, so a skip is worked out from where the
     // track is now, clamped to its ends: seeking past the duration would end
-    // the track, which is what ⏭ is for, and a negative rewinds to nothing.
+    // the track, which is what ▶▶ is for, and a negative rewinds to nothing.
     const skipTo = (by: number) =>
       String(Math.max(0, Math.min((track.duration ?? 0) - 1, (track.position ?? 0) + by)))
 
     const buttons = (
       <Box gap={1}>
-        {key('prev', '⏮')('prev')}
+        {key('prev', '◀◀')('prev')}
         {/*
           Ten seconds either way rather than a click on the bar: `ui.press`
           carries `{ plugin, element, component, surface }` and no coordinate,
           so the band cannot tell where along a bar the pointer landed. Drawing
           the bar as one Button per cell would encode the position in the key,
           but Buttons carry `[ ]` chrome, and `[█][░][░]` is no longer a bar.
+
+          A skip is one triangle and a track change two, so the pair reads as
+          degrees of the same move rather than as two unrelated icons.
         */}
-        {key('back', '⏪')('seek', skipTo(-SKIP_SECONDS))}
-        {key('play', track.state === 'playing' ? '⏸' : '▶')('toggle')}
-        {key('forward', '⏩')('seek', skipTo(SKIP_SECONDS))}
-        {key('next', '⏭')('next')}
+        {key('back', '◀')('seek', skipTo(-SKIP_SECONDS))}
+        {key('play', track.state === 'playing' ? '‖' : '▶')('toggle')}
+        {key('forward', '▶')('seek', skipTo(SKIP_SECONDS))}
+        {key('next', '▶▶')('next')}
         {/*
           Compact has one line for everything, so it keeps only the transport
           and the hide button: volume, shuffle and repeat are a `/player`
           command away and would crowd the row they share with the title.
         */}
         {mode.modes ? key('vol-', '−')('volume', String(Math.max(0, volume - 5))) : null}
-        {mode.modes ? key('vol+', '＋')('volume', String(Math.min(100, volume + 5))) : null}
+        {mode.modes ? key('vol+', '+')('volume', String(Math.min(100, volume + 5))) : null}
         {mode.modes
-          ? key('shuffle', '⤨', { on: track.shuffle === true })(
+          ? key('shuffle', '⇄', { on: track.shuffle === true })(
               'shuffle',
               track.shuffle === true ? 'off' : 'on',
             )
           : null}
+        {/*
+          Repeat cycles off → all → one, so colour alone cannot say which of
+          the two on states it is in; the `1` does, as `🔂` used to before the
+          font turned it into a coloured badge.
+        */}
         {mode.modes
-          ? key('repeat', repeat === 'one' ? '🔂' : '🔁', { on: repeat !== 'off' })(
+          ? key('repeat', repeat === 'one' ? '↻1' : '↻', { on: repeat !== 'off' })(
               'repeat',
               repeats[repeat],
             )
           : null}
         {/*
           Only the full band can be closed; compact is the state closing lands
-          in, so offering it an ✕ would suggest a way to hide the track that
+          in, so offering it an × would suggest a way to hide the track that
           does not exist (it goes when Music.app stops, and not before).
         */}
         {mode.modes ? (
@@ -615,7 +623,7 @@ export const register: Register = on => {
               engine.status(rowFor(track))
             }}
           >
-            ✕
+            ×
           </Button>
         ) : null}
       </Box>

@@ -362,6 +362,25 @@ describe('player band', () => {
     expect(volumeRun?.[2]).toBe('95')
   })
 
+  test('every button label is a text glyph, not a coloured emoji', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player())
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    // The first set (⏮ ⏪ ⏸ ⏩ ⏭ ⤨ 🔁 ✕) was absent from the terminal's font,
+    // so each label fell back separately: some to a text face, some to the
+    // colour emoji one, which drew blue badges among flat glyphs at double the
+    // width. Anything above the BMP is an emoji by default, and these are the
+    // symbols that were reached for and are not in a coding font.
+    for (const emoji of ['⏮', '⏪', '⏸', '⏩', '⏭', '⤨', '🔁', '🔂', '✕', '＋']) {
+      expect(drawnBand, `${emoji} renders as an emoji badge`).not.toContain(emoji)
+    }
+  })
+
   test('the skip buttons seek from where the track is now', async ($, on) => {
     const w = world(on)
 
