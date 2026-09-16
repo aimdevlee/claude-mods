@@ -14,17 +14,15 @@ import type { EngineInterface, Register } from 'claude-code'
  * session that starts with music playing shows it without a command being run,
  * bare `/player` opens the full band and closes it again, and closing falls
  * back to compact rather than to nothing — it costs no room of its own.
- * `/player compact` and `/player normal` name them explicitly. They draw in
- * different places, which is the point of the split:
+ * `/player compact` and `/player normal` name them explicitly. Both draw in
+ * the same place, above the prompt; they differ in how much:
  *
- *   compact  the first row of the footer, directly under the prompt — the
- *            track, a meter, transport. Always there while something plays, so
- *            there is nothing to toggle and no cover; the engine's own mode
- *            labels are redrawn beneath it, and when Music.app goes idle the
- *            footer is left exactly as it was.
- *   normal   the band above the prompt — 4 rows beside a 12x4 cover, adding
- *            the byline, the volume and the mode buttons. `/player` opens it
- *            and `/player` again puts compact back.
+ *   compact  one row — the track, a meter, transport. It appears as soon as
+ *            something plays and goes when Music.app is idle, so there is
+ *            nothing to toggle and no room for a cover.
+ *   normal   4 rows beside a 12x4 cover, adding the byline, the volume and the
+ *            mode buttons. `/player` opens it and `/player` again puts compact
+ *            back.
  *
  * In normal a Raster of the cover sits on the left (a 2x2 pixel block per
  * terminal cell, via the quadrant blocks) and the text rows fill its height
@@ -71,22 +69,18 @@ export const DENSITIES: Record<Density, {
   meter: number
   volumeMeter: number
 }> = {
-  // `art: 0` means no cover at all: compact is the engine's one-row hint line,
-  // so there is no height to hang one on. It also means the poll skips the
-  // export entirely while compact is on (see `artKeyOf`).
+  // `art: 0` means no cover at all: compact is a single row, so there is no
+  // height to hang one on. It also means the poll skips the export entirely
+  // while compact is on (see `artKeyOf`).
   compact: { art: 0, rows: 0, byline: false, modes: false, meter: 8, volumeMeter: 0 },
   normal: { art: 12, rows: 4, byline: true, modes: true, meter: 16, volumeMeter: 8 },
 }
 
-// Compact by default: it lives in the footer and needs no command to appear,
-// so a session that starts with music playing shows it without being asked.
+// Compact by default: it is one row and needs no command to appear, so a
+// session that starts with music playing shows it without being asked.
 // `/player` still opens the full band, and `/player compact` comes back here.
 const DEFAULT_DENSITY: Density = 'compact'
 
-// The hint line has no width to measure — it is one row the engine sizes — so
-// compact lays itself out against a fixed budget rather than the terminal's.
-// Wide enough for a title, a meter and a clock; the title clips past it.
-const COMPACT_COLUMNS = 64
 const isDensity = (word: string): word is Density => word in DENSITIES
 
 type Track = {
@@ -338,11 +332,11 @@ export const register: Register = on => {
 
   /**
    * What the status row should say right now: nothing, whenever the track is
-   * already drawn somewhere. Compact shows it in the footer and normal shows
-   * it above the prompt, and closing the band drops back to compact rather
-   * than to nothing, so in practice the row stays quiet and this is a guard
-   * rather than a display of its own — it keeps the row from doubling the
-   * footer if a future mode ever leaves the track unshown.
+   * already drawn somewhere. Both modes draw above the prompt, and closing the
+   * band drops back to compact rather than to nothing, so in practice the row
+   * stays quiet and this is a guard rather than a display of its own — it
+   * keeps the row from doubling the band if a future mode ever left the track
+   * unshown.
    */
   const rowFor = (t: Track) =>
     density === 'compact' || isShown ? undefined : statusLineOf(t)
@@ -418,7 +412,7 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description:
-        'Apple Music in the footer: a playing track shows there by itself, /player opens the full band above the prompt and closes it again, /player <song> plays it, compact | normal name the two, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
+        'Apple Music above the prompt: a playing track shows there by itself as one row, /player opens the full band and closes it again, /player <song> plays it, compact | normal name the two, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
       argumentHint: '[song | pause | next | compact | normal | search <song> | playlist <name> | close]',
     })
     const engine = host
@@ -433,9 +427,9 @@ export const register: Register = on => {
     const engine = host
     const query = e.args.trim()
     if (query === 'close' || query === 'off') {
-      // Closing the band leaves compact behind rather than nothing: it is the
-      // footer row, which costs no space of its own. `/player compact` is the
-      // same thing said explicitly.
+      // Closing the band leaves compact behind rather than nothing: it is one
+      // row, the least the band can be. `/player compact` is the same thing
+      // said explicitly.
       density = 'compact'
       isShown = false
       engine.invalidate()
@@ -507,12 +501,13 @@ export const register: Register = on => {
     return {}
   })
 
-  // The full band, above the prompt. Compact does not draw here: it lives on
-  // the footer under the prompt instead (see the `SessionMode` hook below).
+  // Both modes draw here, above the prompt. Compact has no toggle — it is one
+  // row and shows as soon as something plays — so `isShown` gates only the
+  // full band, and compact asks instead whether there is a track to draw.
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     const engine = host
-    if (!engine || !isShown || density === 'compact') return next(e)
-    if (e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
+    if (!engine || e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
+    if (density === 'compact' ? track.title === undefined : !isShown) return next(e)
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
     const mode = DENSITIES[density]
     // Leave the right edge to the engine's collapse mark (`[-]`).
@@ -582,22 +577,45 @@ export const register: Register = on => {
               repeats[repeat],
             )
           : null}
-        <Button
-          key="close"
-          dimColor
-          onPress={() => {
-            // Same as `/player` and `/player close`: closing the band drops
-            // back to compact, not to nothing.
-            density = 'compact'
-            isShown = false
-            engine.invalidate()
-            engine.status(rowFor(track))
-          }}
-        >
-          ✕
-        </Button>
+        {/*
+          Only the full band can be closed; compact is the state closing lands
+          in, so offering it an ✕ would suggest a way to hide the track that
+          does not exist (it goes when Music.app stops, and not before).
+        */}
+        {mode.modes ? (
+          <Button
+            key="close"
+            dimColor
+            onPress={() => {
+              // Same as `/player` and `/player close`: closing the band drops
+              // back to compact, not to nothing.
+              density = 'compact'
+              isShown = false
+              engine.invalidate()
+              engine.status(rowFor(track))
+            }}
+          >
+            ✕
+          </Button>
+        ) : null}
       </Box>
     )
+
+    // Compact is a single row, so the track and the buttons share it rather
+    // than stacking. A note still takes a line of its own, being a sentence.
+    if (mode.art === 0) {
+      return (
+        <Box width={outer} flexDirection="column" paddingX={1}>
+          <Box gap={2}>
+            <Text bold={track.state === 'playing'}>{left}</Text>
+            {meter(bar)}
+            <Text dimColor>{right}</Text>
+            {buttons}
+          </Box>
+          {note !== undefined ? <Text color="warning">{note}</Text> : null}
+        </Box>
+      )
+    }
 
     // Rows sit next to the cover rather than stretching to the terminal's
     // edge: pushed apart across 150 columns the title and its clock stopped
@@ -632,61 +650,4 @@ export const register: Register = on => {
     )
   })
 
-  /**
-   * Compact, drawn in the footer under the prompt. It goes here rather than
-   * above the prompt because at one line it was competing with the status row
-   * for the same job — and this way it keeps its buttons, which a status row
-   * cannot have.
-   *
-   * Of the two footer slots this is the upper one: `SessionMode` (the mode
-   * labels, `auto mode on`) draws above `PromptHint` (`? for shortcuts`), so
-   * taking the hint slot put the track below the modes. The track goes first
-   * and the engine's own labels are redrawn beneath it, so nothing is lost.
-   * When Music.app is idle the hook passes and the footer is untouched.
-   */
-  on('ui.render', { component: 'SessionMode' }, ($, e, next) => {
-    const engine = host
-    if (!engine || density !== 'compact' || track.title === undefined) return next(e)
-    if (e.surface !== 'terminal') return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const { left, bar, right } = trackLineOf(track, COMPACT_COLUMNS, 'compact')
-    const press = (...args: string[]) => () => {
-      void act(engine, ...args).catch(() => undefined)
-    }
-    const meterBox = (() => {
-      if (bar === '') return null
-      const { filled, rest } = splitMeter(bar)
-      return (
-        <Box key="meter">
-          <Text>{filled}</Text>
-          <Text dimColor>{rest}</Text>
-        </Box>
-      )
-    })()
-
-    return (
-      <Box flexDirection="column">
-        <Box gap={2}>
-          <Text bold={track.state === 'playing'}>{left}</Text>
-          {meterBox}
-          <Text dimColor>{right}</Text>
-          <Box gap={1}>
-            <Button key="prev" onPress={press('prev')}>⏮</Button>
-            <Button key="play" onPress={press('toggle')}>
-              {track.state === 'playing' ? '⏸' : '▶'}
-            </Button>
-            <Button key="next" onPress={press('next')}>⏭</Button>
-          </Box>
-          {note !== undefined ? <Text color="warning">{note}</Text> : null}
-        </Box>
-        {/*
-          The engine's own mode labels, redrawn beneath so taking this slot
-          does not cost them their line. The engine joins them with ` & `.
-        */}
-        {e.props.modes.length > 0 ? (
-          <Text dimColor>{e.props.modes.join(' & ')}</Text>
-        ) : null}
-      </Box>
-    )
-  })
 }

@@ -30,18 +30,6 @@ const BAND: RenderInput<'AbovePrompt'> = {
   },
 }
 
-/**
- * The footer's upper slot, where compact draws — above `PromptHint`, which is
- * why the track ends up between the prompt and the rest of the footer.
- */
-const FOOTER: RenderInput<'SessionMode'> = {
-  component: 'SessionMode',
-  surface: 'terminal',
-  requestId: 'session-mode',
-  viewport: { columns: 160, rows: 40 },
-  props: { modes: ['auto mode on'] },
-}
-
 const SESSION = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
 
 const player = (args = '') =>
@@ -119,11 +107,11 @@ describe('player band', () => {
     await w.clock.settle()
     expect(w.runs[0]?.[0]).toMatch(/\/bin\/player$/)
     expect(verbs(w.runs)).toEqual(['status'])
-    // The session starts in compact, which draws the track in the footer, so
-    // the status row stays quiet rather than saying the same thing twice.
-    expect(w.statuses.at(-1), 'the footer already shows it').toBeUndefined()
-    const footer = JSON.stringify(await $.ui.render(FOOTER))
-    expect(footer, 'and it is there without a command being run').toContain('LOVE ATTACK')
+    // The session starts in compact, which draws the track above the prompt,
+    // so the status row stays quiet rather than saying the same thing twice.
+    expect(w.statuses.at(-1), 'the band already shows it').toBeUndefined()
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand, 'and it is there without a command being run').toContain('LOVE ATTACK')
   })
 
   test('a session that starts with music playing shows it without a command', async ($, on) => {
@@ -133,28 +121,28 @@ describe('player band', () => {
     await w.clock.advance(1000)
     await w.clock.settle()
 
-    const footer = JSON.stringify(await $.ui.render(FOOTER))
-    expect(footer, 'compact is the resting state, so nothing had to be run').toContain(
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand, 'compact is the resting state, so nothing had to be run').toContain(
       'LOVE ATTACK · 리센느',
     )
     expect(w.commands, 'and the only command is the one registered at startup').toEqual(['player'])
   })
 
-  test('an idle player leaves the footer alone', async ($, on) => {
+  test('an idle player draws no band at all', async ($, on) => {
     const w = world(on, '{"state":"stopped"}')
     let engineDrew = false
 
-    on('ui.render', { component: 'SessionMode' }, ($, e) => {
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
       engineDrew = true
       const { Text } = $.ui.resolve(e)
-      return h(Text, {}, e.props.modes.join(' & ')) as RenderElement
+      return h(Text, {}, 'beneath') as RenderElement
     })
 
     await $.session.start(SESSION)
     await w.clock.advance(1000)
     await w.clock.settle()
 
-    await $.ui.render(FOOTER)
+    await $.ui.render(BAND)
     expect(engineDrew, 'nothing playing means nothing to say').toBe(true)
   })
 
@@ -398,7 +386,7 @@ describe('player band', () => {
     const closed = await $.command.run(player())
     await w.clock.settle()
     expect(closed.text).toBeUndefined()
-    expect(JSON.stringify(await $.ui.render(FOOTER)), 'compact is the resting state')
+    expect(JSON.stringify(await $.ui.render(BAND)), 'compact is the resting state')
       .toContain('LOVE ATTACK')
   })
 
@@ -466,7 +454,7 @@ describe('player band', () => {
     expect(text).toContain('ambiguous')
   })
 
-  test('/player compact draws in the footer, not above the prompt', async ($, on) => {
+  test('/player compact draws one row with no cover', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -478,17 +466,55 @@ describe('player band', () => {
     expect(verbs(w.runs), 'a one-line band has no height to hang a cover on')
       .not.toContain('art')
 
-    const footer = JSON.stringify(await $.ui.render(FOOTER))
-    expect(footer, 'no cover is exported, so none is drawn').not.toContain('Raster')
-    expect(footer, 'with no byline row the artist rides the track row').toContain(
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand, 'no cover is exported, so none is drawn').not.toContain('Raster')
+    expect(drawnBand, 'with no byline row the artist rides the track row').toContain(
       'LOVE ATTACK · 리센느',
     )
-    expect(footer, 'the album is what compact drops').not.toContain('SCENEDROME')
-    expect(footer, 'and so is the volume').not.toContain('vol 100')
+    expect(drawnBand, 'the album is what compact drops').not.toContain('SCENEDROME')
+    expect(drawnBand, 'and so is the volume').not.toContain('vol 100')
   })
 
-  test('compact leaves the band above the prompt to normal', async ($, on) => {
+
+  test('compact keeps the transport and drops the rest of the buttons', async ($, on) => {
     const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.settle()
+
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    for (const key of ['prev', 'play', 'next']) {
+      expect(drawnBand, `compact keeps ${key}`).toContain(`"key":"${key}"`)
+    }
+    // Volume, shuffle and repeat are a `/player` command away, and would crowd
+    // the single row they would have to share with the title. Hide goes too:
+    // compact has nothing to close: it is the state closing lands in, and it
+    // goes by itself when Music.app stops.
+    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat', 'close']) {
+      expect(drawnBand, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
+    }
+  })
+
+  test('compact puts the track, the meter and the buttons on one row', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    // One `gap` row holding all of it, rather than the stacked rows normal
+    // builds beside its cover.
+    expect(drawnBand).toContain(
+      '{"type":"Box","props":{"gap":2},"children":[{"type":"Text","props":{"bold":true},"children":["▶ LOVE ATTACK · 리센느"]}',
+    )
+    expect(drawnBand, 'no byline row, so no album').not.toContain('SCENEDROME')
+  })
+
+  test('compact goes when nothing is playing', async ($, on) => {
+    const w = world(on, '{"state":"stopped"}')
     let engineDrew = false
 
     on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
@@ -502,59 +528,7 @@ describe('player band', () => {
     await w.clock.settle()
 
     await $.ui.render(BAND)
-    expect(engineDrew, 'compact draws under the prompt, so the band is free').toBe(true)
-  })
-
-  test('compact keeps the transport and drops the rest of the buttons', async ($, on) => {
-    const w = world(on)
-
-    await $.session.start(SESSION)
-    await $.command.run(player('compact'))
-    await w.clock.settle()
-
-    const footer = JSON.stringify(await $.ui.render(FOOTER))
-    for (const key of ['prev', 'play', 'next']) {
-      expect(footer, `compact keeps ${key}`).toContain(`"key":"${key}"`)
-    }
-    // Volume, shuffle and repeat are a `/player` command away, and would crowd
-    // the single row they would have to share with the title. Hide goes too:
-    // the footer is the engine's own, and compact hands it back by itself
-    // when nothing plays.
-    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat', 'close']) {
-      expect(footer, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
-    }
-  })
-
-  test('compact sits above the engine mode labels rather than replacing them', async ($, on) => {
-    const w = world(on)
-
-    await $.session.start(SESSION)
-    await $.command.run(player('compact'))
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
-    const footer = JSON.stringify(await $.ui.render(FOOTER))
-    expect(footer, 'the track gets a row of its own').toContain('LOVE ATTACK · 리센느')
-    expect(footer, 'and the mode labels keep theirs beneath it').toContain('auto mode on')
-    expect(footer, 'stacked, so the two do not share a line').toContain('"flexDirection":"column"')
-  })
-
-  test('compact hands the footer back when nothing is playing', async ($, on) => {
-    const w = world(on, '{"state":"stopped"}')
-    let engineDrew = false
-
-    on('ui.render', { component: 'SessionMode' }, ($, e) => {
-      engineDrew = true
-      const { Text } = $.ui.resolve(e)
-      return h(Text, {}, e.props.modes.join(' & ')) as RenderElement
-    })
-
-    await $.session.start(SESSION)
-    await $.command.run(player('compact'))
-    await w.clock.settle()
-
-    await $.ui.render(FOOTER)
-    expect(engineDrew, 'the mode labels are not lost to a band with nothing to say').toBe(true)
+    expect(engineDrew, 'an idle player leaves the prompt as it was').toBe(true)
   })
 
   test('leaving compact exports the cover the wider band needs', async ($, on) => {
@@ -597,9 +571,9 @@ describe('player band', () => {
   })
 
   test('the status row never doubles what the band already shows', async ($, on) => {
-    // Compact draws the track in the footer and normal draws it above the
-    // prompt, and closing the band falls back to compact rather than to
-    // nothing — so there is no state in which both speak at once.
+    // Both modes draw the track above the prompt, and closing the band falls
+    // back to compact rather than to nothing — so there is no state in which
+    // both the band and the status row speak at once.
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -629,9 +603,9 @@ describe('player band', () => {
     await w.clock.advance(1000)
     await w.clock.settle()
 
-    const footer = JSON.stringify(await $.ui.render(FOOTER))
-    expect(footer, 'the title is still there').toContain('LOVE ATTACK')
-    expect(footer, 'a dangling " · " reads as a missing word').not.toContain('LOVE ATTACK ·')
+    const drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand, 'the title is still there').toContain('LOVE ATTACK')
+    expect(drawnBand, 'a dangling " · " reads as a missing word').not.toContain('LOVE ATTACK ·')
   })
 
   test('idle Music.app says so', async ($, on) => {
