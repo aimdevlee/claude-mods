@@ -606,26 +606,24 @@ export const register: Register = on => {
             )
           : null}
         {/*
-          Only the full band can be closed; compact is the state closing lands
-          in, so offering it an × would suggest a way to hide the track that
-          does not exist (it goes when Music.app stops, and not before).
+          The size toggle, drawn in both modes: ▲ opens the full band from
+          compact and ▼ folds it back, which is what bare `/player` does from
+          the composer. It is not a close button — compact is where closing
+          lands, and it goes when Music.app stops, not before — so the label
+          points at the size it would move to rather than at an exit.
         */}
-        {mode.modes ? (
-          <Button
-            key="close"
-            dimColor
-            onPress={() => {
-              // Same as `/player` and `/player close`: closing the band drops
-              // back to compact, not to nothing.
-              density = 'compact'
-              isShown = false
-              engine.invalidate()
-              engine.status(rowFor(track))
-            }}
-          >
-            ×
-          </Button>
-        ) : null}
+        <Button
+          key="size"
+          dimColor
+          onPress={() => {
+            density = density === 'compact' ? 'normal' : 'compact'
+            isShown = density !== 'compact'
+            engine.invalidate()
+            engine.status(rowFor(track))
+          }}
+        >
+          {mode.modes ? '▼' : '▲'}
+        </Button>
       </Box>
     )
 

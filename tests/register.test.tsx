@@ -555,16 +555,44 @@ describe('player band', () => {
     await w.clock.settle()
 
     const drawnBand = JSON.stringify(await $.ui.render(BAND))
-    for (const key of ['prev', 'play', 'next']) {
+    // The size toggle stays: it is how the full band is reached without a
+    // command, and the one row has space for it.
+    for (const key of ['prev', 'play', 'next', 'size']) {
       expect(drawnBand, `compact keeps ${key}`).toContain(`"key":"${key}"`)
     }
     // Volume, shuffle and repeat are a `/player` command away, and would crowd
-    // the single row they would have to share with the title. Hide goes too:
-    // compact has nothing to close: it is the state closing lands in, and it
-    // goes by itself when Music.app stops.
-    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat', 'close']) {
+    // the single row they would have to share with the title.
+    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat']) {
       expect(drawnBand, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
     }
+  })
+
+  test('the size button moves between the two modes', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    // Compact points up, at the size it would open into.
+    let drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand).toContain('"key":"size","label":"▲"')
+    expect(drawnBand, 'and compact has no cover to show').not.toContain('Raster')
+
+    await $.ui.press({ plugin: 'player', key: 'size' })
+    await w.clock.advance(1000)
+    await w.clock.settle()
+
+    // Now the full band, and the button points back down.
+    drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand, 'the full band draws its cover').toContain('Raster')
+    expect(drawnBand).toContain('"key":"size","label":"▼"')
+
+    await $.ui.press({ plugin: 'player', key: 'size' })
+    await w.clock.settle()
+
+    drawnBand = JSON.stringify(await $.ui.render(BAND))
+    expect(drawnBand, 'and folds back to one row').not.toContain('Raster')
   })
 
   test('compact puts the track, the meter and the buttons on one row', async ($, on) => {
