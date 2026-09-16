@@ -47,31 +47,6 @@ tell application "Music"
     set currentVolume to sound volume
     set shuffleOn to shuffle enabled
     set repeatMode to song repeat as text
-    -- Extras the full-size band shows. Which ones are worth asking for was
-    -- measured over a 149-track library: genre, year and the track number are
-    -- filled for every `file track`, while `played count` was set on 3 of 149
-    -- (a subscription track's plays do not accrue locally) and `bpm` and
-    -- `rating` on none, so those are not asked for at all.
-    --
-    -- A playing `URL track` is the thin case: it reports its genre but answers
-    -- 0 for the year and the track number. So each field is emitted only when
-    -- it holds something, and the band omits whatever did not arrive.
-    set trackGenre to ""
-    set trackYear to 0
-    set trackNumber to 0
-    set trackTotal to 0
-    try
-      set trackGenre to genre of theTrack
-    end try
-    try
-      set trackYear to year of theTrack
-    end try
-    try
-      set trackNumber to track number of theTrack
-    end try
-    try
-      set trackTotal to track count of theTrack
-    end try
   on error
     return "{\"state\":\"" & playerState & "\"}"
   end try
@@ -79,14 +54,8 @@ tell application "Music"
   set trackTitle to (text items of trackTitle) as text
   set trackArtist to (text items of trackArtist) as text
   set trackAlbum to (text items of trackAlbum) as text
-  set trackGenre to (text items of trackGenre) as text
   set AppleScript's text item delimiters to ""
-  set extras to ""
-  if trackGenre is not "" then set extras to extras & ",\"genre\":\"" & trackGenre & "\""
-  if trackYear > 0 then set extras to extras & ",\"year\":" & trackYear
-  if trackNumber > 0 then set extras to extras & ",\"track\":" & trackNumber
-  if trackTotal > 0 then set extras to extras & ",\"tracks\":" & trackTotal
-  return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"" & extras & "}"
+  return "{\"state\":\"" & playerState & "\",\"title\":\"" & trackTitle & "\",\"artist\":\"" & trackArtist & "\",\"album\":\"" & trackAlbum & "\",\"duration\":" & trackDuration & ",\"position\":" & trackPosition & ",\"volume\":" & currentVolume & ",\"shuffle\":" & shuffleOn & ",\"repeat\":\"" & repeatMode & "\"}"
 end tell
 AS
 }

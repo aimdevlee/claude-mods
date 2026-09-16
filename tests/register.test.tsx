@@ -13,10 +13,6 @@ const PLAYING = JSON.stringify({
   volume: 100,
   shuffle: false,
   repeat: 'off',
-  genre: 'K-Pop',
-  year: 2019,
-  track: 3,
-  tracks: 6,
 })
 
 const BAND: RenderInput<'AbovePrompt'> = {
@@ -381,7 +377,7 @@ describe('player band', () => {
     expect(text).toContain('ambiguous')
   })
 
-  test('/player compact draws the small band and moves the artist up a row', async ($, on) => {
+  test('/player compact draws one line with no cover', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -390,10 +386,11 @@ describe('player band', () => {
     await w.clock.settle()
 
     expect(text, 'the band redrawing is the answer, as with the toggle').toBeUndefined()
-    const artRun = w.runs.find(argv => argv[1] === 'art')
-    expect(artRun?.[2], 'compact asks for a twelve-column cover').toBe('12')
+    expect(verbs(w.runs), 'a one-line band has no height to hang a cover on')
+      .not.toContain('art')
 
     const drawn = JSON.stringify(await $.ui.render(BAND))
+    expect(drawn, 'no cover is exported, so none is drawn').not.toContain('Raster')
     expect(drawn, 'with no byline row the artist rides the track row').toContain(
       'LOVE ATTACK · 리센느',
     )
@@ -401,106 +398,61 @@ describe('player band', () => {
     expect(drawn, 'and so is the volume row').not.toContain('vol 100')
   })
 
-  test('/player full frames the band and asks for a bigger cover', async ($, on) => {
+  test('compact keeps the transport and drops the rest of the buttons', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
-    await $.command.run(player('full'))
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
-    const artRun = w.runs.find(argv => argv[1] === 'art')
-    expect(artRun?.[2], 'full asks for a thirty-six-column cover').toBe('36')
-
-    const drawn = JSON.stringify(await $.ui.render(BAND))
-    expect(drawn, 'full draws a border').toContain('"borderStyle":"round"')
-    expect(drawn, 'and titles it').toContain('APPLE MUSIC')
-    expect(drawn, 'the byline stays').toContain('리센느 — SCENEDROME - EP')
-    expect(drawn, 'and full adds the extras the other modes have no room for')
-      .toContain('K-Pop · 2019 · 3/6곡')
-  })
-
-  test('full shows only the extras Music.app actually reported', async ($, on) => {
-    // A streaming track answers with a genre and nothing else — the CLI omits
-    // the keys rather than sending zeroes, so the row must not print "0년" or
-    // an empty play count beside it.
-    const streaming = JSON.stringify({
-      ...JSON.parse(PLAYING),
-      genre: 'K-Pop',
-      year: undefined,
-      track: undefined,
-      tracks: undefined,
-    })
-    const w = world(on, streaming)
-
-    await $.session.start(SESSION)
-    await $.command.run(player('full'))
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
-    const drawn = JSON.stringify(await $.ui.render(BAND))
-    expect(drawn, 'the genre is what a playing stream has').toContain('K-Pop')
-    expect(drawn, 'a missing year must not print as a zero').not.toContain('2019')
-    expect(drawn, 'nor a missing track number as a bare slash').not.toContain('곡')
-  })
-
-  test('a track number with no album total is left out', async ($, on) => {
-    // `3` beside a genre reads as a number with no unit, so the pair is shown
-    // only when both halves arrived.
-    const partial = JSON.stringify({ ...JSON.parse(PLAYING), tracks: undefined })
-    const w = world(on, partial)
-
-    await $.session.start(SESSION)
-    await $.command.run(player('full'))
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
-    const drawn = JSON.stringify(await $.ui.render(BAND))
-    expect(drawn, 'the genre and year still show').toContain('K-Pop · 2019')
-    expect(drawn, 'but the half-known pair does not').not.toContain('곡')
-  })
-
-  test('a track with no extras at all drops the row instead of drawing it blank', async ($, on) => {
-    const { genre, year, track, tracks, ...bare } = JSON.parse(PLAYING)
-    const w = world(on, JSON.stringify(bare))
-
-    await $.session.start(SESSION)
-    await $.command.run(player('full'))
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
-    const drawn = JSON.stringify(await $.ui.render(BAND))
-    // Nothing to say, so full has normal's rows plus its frame — and no blank
-    // line, and no separator left stranded where the extras would have gone.
-    expect(drawn).not.toContain('K-Pop')
-    expect(drawn).not.toContain(' · ')
-    expect(drawn, 'the band still draws').toContain('LOVE ATTACK')
-  })
-
-  test('changing density re-exports the cover at the new width', async ($, on) => {
-    const w = world(on)
-
-    await $.session.start(SESSION)
-    await $.command.run(player())
-    await w.clock.advance(1000)
-    await w.clock.settle()
-
     await $.command.run(player('compact'))
+    await w.clock.settle()
+
+    const drawn = JSON.stringify(await $.ui.render(BAND))
+    for (const key of ['prev', 'play', 'next', 'close']) {
+      expect(drawn, `compact keeps ${key}`).toContain(`"key":"${key}"`)
+    }
+    // Volume, shuffle and repeat are a `/player` command away, and would crowd
+    // the single row they would have to share with the title.
+    for (const key of ['vol-', 'vol+', 'shuffle', 'repeat']) {
+      expect(drawn, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
+    }
+  })
+
+  test('leaving compact exports the cover the wider band needs', async ($, on) => {
+    const w = world(on)
+
+    await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect(verbs(w.runs), 'nothing to export while compact').not.toContain('art')
+
+    await $.command.run(player('normal'))
     await w.clock.advance(1000)
     await w.clock.settle()
 
     const widths = w.runs.filter(a => a[1] === 'art').map(a => a[2])
-    expect(widths, 'the track never changed, but the mode did').toEqual(['20', '12'])
+    expect(widths, 'the track never changed, but the mode did').toEqual(['20'])
   })
 
   test('a density word is not played as a song', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
+    await $.command.run(player('compact'))
+    await w.clock.settle()
+
+    expect(verbs(w.runs), 'there is no song called "compact" to search for').not.toContain('play')
+  })
+
+  test('a word that is not a mode is still a song', async ($, on) => {
+    // `full` was a density once. Now that it is not, it must fall through to
+    // the search like any other word rather than being quietly swallowed.
+    const w = world(on)
+
+    await $.session.start(SESSION)
     await $.command.run(player('full'))
     await w.clock.settle()
 
-    expect(verbs(w.runs), 'there is no song called "full" to search for').not.toContain('play')
+    expect(w.runs.some(a => a[1] === 'play' && a[2] === 'full')).toBe(true)
   })
 
   test('the status row carries a meter while the band is hidden', async ($, on) => {

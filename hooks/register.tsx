@@ -10,14 +10,13 @@ import type { EngineInterface, Register } from 'claude-code'
  * `bin/player status` and redraws. The transport Buttons are click-only — no
  * hotkeys, so typing digits into the composer stays typing digits.
  *
- * The band draws at one of three densities, chosen with `/player compact`,
- * `/player normal` or `/player full` and remembered for the session:
+ * The band draws at one of two densities, chosen with `/player compact` or
+ * `/player normal` and remembered for the session:
  *
- *   compact  3 rows, a 12x2 cover — the track, a meter, one row of buttons
- *   normal   5 rows, a 20x4 cover — adds the byline and the volume (default)
- *   full     7 rows, a 28x6 cover — adds a framed header and the mode row
+ *   compact  1 row, no cover — the track, a meter, and the transport buttons
+ *   normal   4 rows, a 20x4 cover — adds the byline and the volume (default)
  *
- * In every mode a Raster of the cover sits on the left (a 2x2 pixel block per
+ * In normal a Raster of the cover sits on the left (a 2x2 pixel block per
  * terminal cell, via the quadrant blocks) and the text rows fill its height
  * beside it. A track with no artwork gets a plate of the same size, so the band
  * never changes height between songs.
@@ -46,26 +45,25 @@ const LISTING = new Set(['search', 'search-library', 'catalog', 'playlists', 'op
  *
  * `rows` is therefore not free: it is `bin/player-art`'s own arithmetic, and a
  * value that disagrees makes a coverless track a different height from a
- * covered one. Measured, not guessed — 12→2, 20→4, 36→7. Changing `art` means
- * re-running `player art <n>` and copying the row count it answers.
+ * covered one. Measured, not guessed — 20 columns answers 4 rows. Changing
+ * `art` means re-running `player art <n>` and copying the count it answers.
  * `meter` is the position bar's width, and `volumeMeter` the volume's; 0 means
  * the mode leaves that bar out and prints only the numbers.
  */
-export type Density = 'compact' | 'normal' | 'full'
+export type Density = 'compact' | 'normal'
 
 export const DENSITIES: Record<Density, {
   art: number
   rows: number
   byline: boolean
-  meta: boolean
   modes: boolean
-  frame: boolean
   meter: number
   volumeMeter: number
 }> = {
-  compact: { art: 12, rows: 2, byline: false, meta: false, modes: false, frame: false, meter: 12, volumeMeter: 0 },
-  normal: { art: 20, rows: 4, byline: true, meta: false, modes: true, frame: false, meter: 16, volumeMeter: 8 },
-  full: { art: 36, rows: 7, byline: true, meta: true, modes: true, frame: true, meter: 24, volumeMeter: 10 },
+  // `art: 0` means no cover at all: compact is a single line, so there is no
+  // height to hang one on, and the row would only push the text aside.
+  compact: { art: 0, rows: 0, byline: false, modes: false, meter: 8, volumeMeter: 0 },
+  normal: { art: 20, rows: 4, byline: true, modes: true, meter: 16, volumeMeter: 8 },
 }
 
 const DEFAULT_DENSITY: Density = 'normal'
@@ -81,14 +79,6 @@ type Track = {
   volume?: number
   shuffle?: boolean
   repeat?: string
-  // Extras the CLI emits only when the track actually carries them. Measured
-  // over a 149-track library: a `file track` fills all of these, while a
-  // playing `URL track` reports its genre and answers 0 for the rest. The
-  // full-size band shows what arrived and omits the rest.
-  genre?: string
-  year?: number
-  track?: number
-  tracks?: number
 }
 
 type Host = {
@@ -250,28 +240,6 @@ export function bylineOf(track: Track): string {
 }
 
 /**
- * The extras row full mode adds: genre, year and the track's place on its
- * album, whichever of them Music.app reported. A playing stream answers with
- * the genre alone, so this is often one word — and empty when it is not even
- * that, in which case the caller drops the row rather than drawing a blank one.
- *
- * The track number is shown as `3/6` only when the total came too; a bare
- * `3` beside a genre reads as a number with no unit.
- */
-export function metaLineOf(track: Track): string {
-  const year = track.year ?? 0
-  const n = track.track ?? 0
-  const total = track.tracks ?? 0
-  return [
-    track.genre,
-    year > 0 ? String(year) : '',
-    n > 0 && total > 0 ? `${n}/${total}곡` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
-}
-
-/**
  * The rows that fill the cover's height beside it. Which ones appear is the
  * mode's call: compact has room for neither, so the artist rides the track row
  * instead, while normal and full give the byline and the modes-and-volume row
@@ -288,10 +256,6 @@ export function detailRowsOf(
   if (mode.byline) {
     const byline = bylineOf(track)
     if (byline !== '') rows.push({ left: clip(byline, Math.max(10, columns - 2)), right: '' })
-  }
-  if (mode.meta) {
-    const meta = metaLineOf(track)
-    if (meta !== '') rows.push({ left: clip(meta, Math.max(10, columns - 2)), right: '' })
   }
   if (mode.modes) {
     const volume = track.volume ?? 0
@@ -338,9 +302,13 @@ export const register: Register = on => {
   /**
    * What identifies a cover: re-export only when the track itself changes —
    * or when the mode does, since each density asks for its own width.
+   * `undefined` means there is no cover to fetch, either because nothing is
+   * playing or because the mode draws none, and the poll then skips the export.
    */
   const artKeyOf = (t: Track) =>
-    t.title === undefined ? undefined : `${t.title}|${t.album ?? ''}|${density}`
+    t.title === undefined || DENSITIES[density].art === 0
+      ? undefined
+      : `${t.title}|${t.album ?? ''}|${density}`
 
   async function poll(engine: Host) {
     if (isPolling) return
@@ -402,8 +370,8 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description:
-        'Apple Music above the prompt: /player toggles the band, /player <song> plays it, compact | normal | full set how much the band draws, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
-      argumentHint: '[song | pause | next | compact | full | search <song> | playlist <name> | close]',
+        'Apple Music above the prompt: /player toggles the band, /player <song> plays it, compact | normal set how much the band draws, and pause | next | prev | volume | shuffle | repeat | seek | playlist | playlists | search | catalog work as they do in the CLI',
+      argumentHint: '[song | pause | next | compact | normal | search <song> | playlist <name> | close]',
     })
     const engine = host
     engine.every(POLL_MS, () => {
@@ -473,12 +441,12 @@ export const register: Register = on => {
     const mode = DENSITIES[density]
     // Leave the right edge to the engine's collapse mark (`[-]`).
     const outer = Math.max(20, e.props.bodyColumns - 6)
-    // A coverless track gets a plate the same size, so the band does not
-    // change height or reflow as the artwork comes and goes between songs.
-    const cover = art ?? placeholderArt(mode.art, mode.rows)
+    // Compact draws no cover at all; the other modes give a track without
+    // artwork a plate the same size, so the band does not change height or
+    // reflow as the artwork comes and goes between songs.
+    const cover = mode.art === 0 ? undefined : art ?? placeholderArt(mode.art, mode.rows)
     // The art takes its columns plus a gap; the text rows get what is left.
-    // A frame spends two more columns on its border and padding.
-    const columns = Math.max(20, outer - cover.columns - 2 - (mode.frame ? 4 : 0))
+    const columns = Math.max(20, outer - (cover === undefined ? 0 : cover.columns + 2))
     const { left, right } = trackLineOf(track, columns, density)
     const volume = track.volume ?? 50
     const press = (...args: string[]) => () => {
@@ -506,12 +474,19 @@ export const register: Register = on => {
         {key('prev', '⏮')('prev')}
         {key('play', track.state === 'playing' ? '⏸' : '▶')('toggle')}
         {key('next', '⏭')('next')}
-        {key('vol-', '−')('volume', String(Math.max(0, volume - 5)))}
-        {key('vol+', '＋')('volume', String(Math.min(100, volume + 5)))}
-        {key('shuffle', '⤨', { on: track.shuffle === true })(
-          'shuffle',
-          track.shuffle === true ? 'off' : 'on',
-        )}
+        {/*
+          Compact has one line for everything, so it keeps only the transport
+          and the hide button: volume, shuffle and repeat are a `/player`
+          command away and would crowd the row they share with the title.
+        */}
+        {mode.modes ? key('vol-', '−')('volume', String(Math.max(0, volume - 5))) : null}
+        {mode.modes ? key('vol+', '＋')('volume', String(Math.min(100, volume + 5))) : null}
+        {mode.modes
+          ? key('shuffle', '⤨', { on: track.shuffle === true })(
+              'shuffle',
+              track.shuffle === true ? 'off' : 'on',
+            )
+          : null}
         {mode.modes
           ? key('repeat', repeat === 'one' ? '🔂' : '🔁', { on: repeat !== 'off' })(
               'repeat',
@@ -532,6 +507,21 @@ export const register: Register = on => {
       </Box>
     )
 
+    // Compact is one line, so the track and the buttons share it rather than
+    // stacking; a note still takes a line of its own, since it is a sentence.
+    if (mode.art === 0) {
+      return (
+        <Box width={outer} flexDirection="column" paddingX={1}>
+          <Box gap={2}>
+            <Text bold={track.state === 'playing'}>{left}</Text>
+            <Text dimColor>{right}</Text>
+            {buttons}
+          </Box>
+          {note !== undefined ? <Text color="warning">{note}</Text> : null}
+        </Box>
+      )
+    }
+
     const body = (
       <Box flexDirection="column" width={columns}>
         <Box justifyContent="space-between">
@@ -549,23 +539,12 @@ export const register: Register = on => {
       </Box>
     )
 
-    const band = (
-      <Box width={mode.frame ? undefined : outer} paddingX={1} gap={1}>
-        <Raster key="cover" columns={cover.columns} rows={cover.rows} cells={cover.cells} />
-        {body}
-      </Box>
-    )
-
-    // Full mode spends its extra rows on a border and a title, which is what
-    // makes it read as a device rather than as a line of text with a picture.
-    if (!mode.frame) return band
-
     return (
-      <Box width={outer} flexDirection="column" borderStyle="round" borderDimColor>
-        <Box paddingX={1}>
-          <Text dimColor>APPLE MUSIC</Text>
-        </Box>
-        {band}
+      <Box width={outer} paddingX={1} gap={1}>
+        {cover !== undefined ? (
+          <Raster key="cover" columns={cover.columns} rows={cover.rows} cells={cover.cells} />
+        ) : null}
+        {body}
       </Box>
     )
   })
