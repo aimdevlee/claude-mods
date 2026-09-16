@@ -14,10 +14,11 @@ import type { EngineInterface, Register } from 'claude-code'
  * `/player normal` and remembered for the session. They draw in different
  * places, which is the point of the split:
  *
- *   compact  a row between the prompt and the hint line — the track, a meter,
- *            transport. Always there while something plays, so there is nothing
- *            to toggle and no cover; the engine's hint is redrawn beneath it,
- *            and when Music.app goes idle the line is left exactly as it was.
+ *   compact  the first row of the footer, directly under the prompt — the
+ *            track, a meter, transport. Always there while something plays, so
+ *            there is nothing to toggle and no cover; the engine's own mode
+ *            labels are redrawn beneath it, and when Music.app goes idle the
+ *            footer is left exactly as it was.
  *   normal   the band above the prompt (default) — 4 rows beside a 12x4 cover,
  *            adding the byline, the volume and the mode buttons. `/player`
  *            toggles it, and the status row carries the track while it is down.
@@ -480,7 +481,7 @@ export const register: Register = on => {
   })
 
   // The full band, above the prompt. Compact does not draw here: it lives on
-  // the hint line under the prompt instead (see the `PromptHint` hook below).
+  // the footer under the prompt instead (see the `SessionMode` hook below).
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     const engine = host
     if (!engine || !isShown || density === 'compact') return next(e)
@@ -602,17 +603,18 @@ export const register: Register = on => {
   })
 
   /**
-   * Compact, drawn on the hint line under the prompt. It goes here rather than
+   * Compact, drawn in the footer under the prompt. It goes here rather than
    * above the prompt because at one line it was competing with the status row
    * for the same job — and this way it keeps its buttons, which a status row
    * cannot have.
    *
-   * It sits directly under the prompt with the engine's own hint kept beneath
-   * it, rather than taking that line over: the shortcuts stay where they were,
-   * and the track gets a row of its own between the two. When Music.app is
-   * idle the hook passes, so the hint line is exactly as the engine drew it.
+   * Of the two footer slots this is the upper one: `SessionMode` (the mode
+   * labels, `auto mode on`) draws above `PromptHint` (`? for shortcuts`), so
+   * taking the hint slot put the track below the modes. The track goes first
+   * and the engine's own labels are redrawn beneath it, so nothing is lost.
+   * When Music.app is idle the hook passes and the footer is untouched.
    */
-  on('ui.render', { component: 'PromptHint' }, ($, e, next) => {
+  on('ui.render', { component: 'SessionMode' }, ($, e, next) => {
     const engine = host
     if (!engine || density !== 'compact' || track.title === undefined) return next(e)
     if (e.surface !== 'terminal') return next(e)
@@ -648,11 +650,12 @@ export const register: Register = on => {
           {note !== undefined ? <Text color="warning">{note}</Text> : null}
         </Box>
         {/*
-          The engine's own hint, redrawn beneath so taking this slot does not
-          cost the shortcuts their line. `hint` is the line as the engine would
-          have drawn it, read the way a screen reader reads it.
+          The engine's own mode labels, redrawn beneath so taking this slot
+          does not cost them their line. The engine joins them with ` & `.
         */}
-        {e.props.hint !== '' ? <Text dimColor>{e.props.hint}</Text> : null}
+        {e.props.modes.length > 0 ? (
+          <Text dimColor>{e.props.modes.join(' & ')}</Text>
+        ) : null}
       </Box>
     )
   })

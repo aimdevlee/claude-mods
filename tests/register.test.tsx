@@ -30,13 +30,16 @@ const BAND: RenderInput<'AbovePrompt'> = {
   },
 }
 
-/** The hint line under the prompt, where compact draws. */
-const HINT: RenderInput<'PromptHint'> = {
-  component: 'PromptHint',
+/**
+ * The footer's upper slot, where compact draws — above `PromptHint`, which is
+ * why the track ends up between the prompt and the rest of the footer.
+ */
+const FOOTER: RenderInput<'SessionMode'> = {
+  component: 'SessionMode',
   surface: 'terminal',
-  requestId: 'prompt-hint',
+  requestId: 'session-mode',
   viewport: { columns: 160, rows: 40 },
-  props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
+  props: { modes: ['auto mode on'] },
 }
 
 const SESSION = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
@@ -418,7 +421,7 @@ describe('player band', () => {
     expect(text).toContain('ambiguous')
   })
 
-  test('/player compact draws on the hint line, not above the prompt', async ($, on) => {
+  test('/player compact draws in the footer, not above the prompt', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -430,13 +433,13 @@ describe('player band', () => {
     expect(verbs(w.runs), 'a one-line band has no height to hang a cover on')
       .not.toContain('art')
 
-    const hint = JSON.stringify(await $.ui.render(HINT))
-    expect(hint, 'no cover is exported, so none is drawn').not.toContain('Raster')
-    expect(hint, 'with no byline row the artist rides the track row').toContain(
+    const footer = JSON.stringify(await $.ui.render(FOOTER))
+    expect(footer, 'no cover is exported, so none is drawn').not.toContain('Raster')
+    expect(footer, 'with no byline row the artist rides the track row').toContain(
       'LOVE ATTACK · 리센느',
     )
-    expect(hint, 'the album is what compact drops').not.toContain('SCENEDROME')
-    expect(hint, 'and so is the volume').not.toContain('vol 100')
+    expect(footer, 'the album is what compact drops').not.toContain('SCENEDROME')
+    expect(footer, 'and so is the volume').not.toContain('vol 100')
   })
 
   test('compact leaves the band above the prompt to normal', async ($, on) => {
@@ -464,20 +467,20 @@ describe('player band', () => {
     await $.command.run(player('compact'))
     await w.clock.settle()
 
-    const hint = JSON.stringify(await $.ui.render(HINT))
+    const footer = JSON.stringify(await $.ui.render(FOOTER))
     for (const key of ['prev', 'play', 'next']) {
-      expect(hint, `compact keeps ${key}`).toContain(`"key":"${key}"`)
+      expect(footer, `compact keeps ${key}`).toContain(`"key":"${key}"`)
     }
     // Volume, shuffle and repeat are a `/player` command away, and would crowd
     // the single row they would have to share with the title. Hide goes too:
-    // the hint line is the engine's own, and compact hands it back by itself
+    // the footer is the engine's own, and compact hands it back by itself
     // when nothing plays.
     for (const key of ['vol-', 'vol+', 'shuffle', 'repeat', 'close']) {
-      expect(hint, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
+      expect(footer, `compact drops ${key}`).not.toContain(`"key":"${key}"`)
     }
   })
 
-  test('compact sits above the engine hint rather than replacing it', async ($, on) => {
+  test('compact sits above the engine mode labels rather than replacing them', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -485,28 +488,28 @@ describe('player band', () => {
     await w.clock.advance(1000)
     await w.clock.settle()
 
-    const hint = JSON.stringify(await $.ui.render(HINT))
-    expect(hint, 'the track gets a row of its own').toContain('LOVE ATTACK · 리센느')
-    expect(hint, 'and the shortcuts keep theirs beneath it').toContain('? for shortcuts')
-    expect(hint, 'stacked, so the two do not share a line').toContain('"flexDirection":"column"')
+    const footer = JSON.stringify(await $.ui.render(FOOTER))
+    expect(footer, 'the track gets a row of its own').toContain('LOVE ATTACK · 리센느')
+    expect(footer, 'and the mode labels keep theirs beneath it').toContain('auto mode on')
+    expect(footer, 'stacked, so the two do not share a line').toContain('"flexDirection":"column"')
   })
 
-  test('compact hands the hint line back when nothing is playing', async ($, on) => {
+  test('compact hands the footer back when nothing is playing', async ($, on) => {
     const w = world(on, '{"state":"stopped"}')
     let engineDrew = false
 
-    on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    on('ui.render', { component: 'SessionMode' }, ($, e) => {
       engineDrew = true
       const { Text } = $.ui.resolve(e)
-      return h(Text, {}, e.props.hint) as RenderElement
+      return h(Text, {}, e.props.modes.join(' & ')) as RenderElement
     })
 
     await $.session.start(SESSION)
     await $.command.run(player('compact'))
     await w.clock.settle()
 
-    await $.ui.render(HINT)
-    expect(engineDrew, 'the shortcuts are not lost to a band with nothing to say').toBe(true)
+    await $.ui.render(FOOTER)
+    expect(engineDrew, 'the mode labels are not lost to a band with nothing to say').toBe(true)
   })
 
   test('leaving compact exports the cover the wider band needs', async ($, on) => {
