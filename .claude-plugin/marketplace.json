@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-mods",
+  "description": "Claude Code mods, one per directory under plugins/",
+  "owner": { "name": "aimdevlee" },
+  "plugins": [
+    {
+      "name": "player",
+      "source": "./plugins/player",
+      "category": "productivity"
+    }
+  ]
+}
