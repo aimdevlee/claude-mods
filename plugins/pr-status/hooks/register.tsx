@@ -5,7 +5,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 /**
  * The pull request for the branch you are on, drawn directly above the prompt.
- * `bin/pr status` is polled and the band redraws; `/pr` opens the full band and
+ * `bin/pr-status status` is polled and the band redraws; `/pr-status` opens the full band and
  * closes it again. Every screen the band names — the pull request, its checks,
  * its files, its commits and each unresolved remark — is a hyperlink, so the
  * band is a way into GitHub rather than a copy of it.
@@ -18,9 +18,9 @@ import type { EngineInterface, Register } from 'claude-code'
  *            command being run, and a branch with none draws nothing.
  *   normal   the band — the byline, the description's first line, the checks
  *            with the failing ones named, who reviewed, the newest unresolved
- *            remark and the row of links. `/pr` opens it, `/pr` folds it back.
+ *            remark and the row of links. `/pr-status` opens it, `/pr-status` folds it back.
  *
- * The poll is cheap because `bin/pr` caches: its key carries the commit HEAD
+ * The poll is cheap because `bin/pr-status` caches: its key carries the commit HEAD
  * points at, so a push answers fresh at once and a TTL covers CI moving while
  * the commit stands still. This hook therefore polls on a clock and lets the
  * CLI decide when that costs a request.
@@ -29,14 +29,14 @@ import type { EngineInterface, Register } from 'claude-code'
  * that overflows the band does not wrap — it pushes the prompt sideways.
  */
 
-const COMMAND = 'pr'
+const COMMAND = 'pr-status'
 
 // The CLI answers from its own cache, so this is how often the band may notice
 // a change, not how often GitHub is asked.
 const POLL_MS = 5000
 
 // Verbs whose own output is the answer: printed into the transcript, the band
-// left as it is. Anything else `/pr` is given is a pull request to pin to.
+// left as it is. Anything else `/pr-status` is given is a pull request to pin to.
 const LISTING = new Set(['show', 'body', 'checks', 'reviews', 'comments', 'files', 'diff', 'web'])
 
 /**
@@ -488,7 +488,7 @@ export const register: Register = on => {
   }
 
   on('session.start', async ($, e, next) => {
-    const cli = `${$.plugin.root}/bin/pr`
+    const cli = `${$.plugin.root}/bin/pr-status`
     host = {
       run: async (...args) => {
         // A diff can be a large fetch; everything else is two round trips at
@@ -503,7 +503,7 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description:
-        'The pull request for your branch, above the prompt: a branch that has one shows it as a single row, /pr opens the full band and closes it again, /pr <number> pins the band to another pull request, and show | body | checks | reviews | comments | files | diff | web print into the transcript',
+        'The pull request for your branch, above the prompt: a branch that has one shows it as a single row, /pr-status opens the full band and closes it again, /pr-status <number> pins the band to another pull request, and show | body | checks | reviews | comments | files | diff | web print into the transcript',
       argumentHint: '[<number> | branch | refresh | compact | normal | show | checks | comments | diff | web]',
     })
     const engine = host
@@ -521,7 +521,7 @@ export const register: Register = on => {
     if (query === 'close' || query === 'off') {
       // Closing leaves compact behind rather than nothing: it is one row, the
       // least the band can be, and it goes on its own when the branch has no
-      // pull request. `/pr compact` is the same thing said explicitly.
+      // pull request. `/pr-status compact` is the same thing said explicitly.
       density = 'compact'
       isShown = false
       engine.invalidate()
@@ -570,10 +570,10 @@ export const register: Register = on => {
         return pr.state === 'none' ? { text: pr.reason ?? `no pull request #${verb}` } : {}
       }
 
-      return { text: `unknown: ${query} — try /pr, /pr <number>, /pr show or /pr comments` }
+      return { text: `unknown: ${query} — try /pr-status, /pr-status <number>, /pr-status show or /pr-status comments` }
     }
 
-    // Bare `/pr` opens the full band and folds it back to the compact row.
+    // Bare `/pr-status` opens the full band and folds it back to the compact row.
     if (density === 'compact') {
       density = 'normal'
       isShown = true

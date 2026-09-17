@@ -1,4 +1,4 @@
-# pr — the pull request, above the prompt
+# pr-status — the pull request, above the prompt
 
 The pull request for the branch you are on, drawn where you are already looking. GitHub's own interfaces only: `gh pr view --json` and one GraphQL query.
 
@@ -17,38 +17,38 @@ Every underlined word is a hyperlink: the pull request, its checks, its files, i
 ## Installing
 
 ```bash
-claude --plugin-dir /path/to/claude-mods/plugins/pr
+claude --plugin-dir /path/to/claude-mods/plugins/pr-status
 ```
 
 To keep it installed, register the repository as a marketplace — see the [repository README](../../README.md#installing).
 
-It needs `gh` on PATH and logged in (`gh auth status`). While the plugin is on, this directory's `bin/` joins PATH, so the `pr` command is there to use, and the `/pr` command is registered.
+It needs `gh` on PATH and logged in (`gh auth status`). While the plugin is on, this directory's `bin/` joins PATH, so the `pr-status` command is there to use, and the `/pr-status` command is registered.
 
 ## Using it
 
 ```
-/pr                    open / close the full band (closing falls back to compact)
-/pr 58788              pin the band to another pull request
-/pr branch             back to the branch's own
-/pr refresh            fetch again now, past the cache
-/pr compact | normal   the density (see below; compact is the default)
-/pr close              close the full band (back to compact)
+/pr-status                    open / close the full band (closing falls back to compact)
+/pr-status 58788              pin the band to another pull request
+/pr-status branch             back to the branch's own
+/pr-status refresh            fetch again now, past the cache
+/pr-status compact | normal   the density (see below; compact is the default)
+/pr-status close              close the full band (back to compact)
 
-/pr show               the pull request at a glance, printed into the transcript
-/pr body               the whole description
-/pr checks             every failing and running check, with its URL
-/pr reviews            who approved, who asked for changes, who is still awaited
-/pr comments           every unresolved review thread: file:line, author, URL
-/pr files              changed files with +/−
-/pr diff               the unified diff
-/pr web                open it in the browser
+/pr-status show               the pull request at a glance, printed into the transcript
+/pr-status body               the whole description
+/pr-status checks             every failing and running check, with its URL
+/pr-status reviews            who approved, who asked for changes, who is still awaited
+/pr-status comments           every unresolved review thread: file:line, author, URL
+/pr-status files              changed files with +/−
+/pr-status diff               the unified diff
+/pr-status web                open it in the browser
 ```
 
-Straight from the CLI: `pr help`
+Straight from the CLI: `pr-status help`
 
 ## The band above the prompt (a function hooks mod)
 
-`hooks/register.tsx` is a Claude Code function-hooks plugin, the same shape as the official repository's `mods/`. One row (compact) appears above the prompt on its own whenever the branch has a pull request, and `/pr` opens the full band in that same place.
+`hooks/register.tsx` is a Claude Code function-hooks plugin, the same shape as the official repository's `mods/`. One row (compact) appears above the prompt on its own whenever the branch has a pull request, and `/pr-status` opens the full band in that same place.
 
 | Mode | Where | What it shows |
 | --- | --- | --- |
@@ -57,7 +57,7 @@ Straight from the CLI: `pr help`
 
 `compact` is both the default and the resting state. **A session started on a branch that has a pull request shows it without a command being run**, and a branch with none draws nothing at all — so there is nothing to turn off, and closing the band falls back to compact rather than to nothing.
 
-`/pr` opens the full band and `/pr` again closes it back to the compact row. `/pr compact` and `/pr normal` name the same two states explicitly. The last button is the size toggle, so the band can be resized from inside the band — `▲` opens it, `▼` folds it back.
+`/pr-status` opens the full band and `/pr-status` again closes it back to the compact row. `/pr-status compact` and `/pr-status normal` name the same two states explicitly. The last button is the size toggle, so the band can be resized from inside the band — `▲` opens it, `▼` folds it back.
 
 Both draw in the `AbovePrompt` slot. The footers below the prompt (`SessionMode`'s `auto mode on`, `PromptHint`'s `? for shortcuts`) are left alone.
 
@@ -92,14 +92,14 @@ In the band, the counts row goes rather than clipping (`✓ 7 ×…` would read 
 
 ### How often it asks GitHub
 
-`bin/pr` caches `status` on disk and the hook polls that every five seconds. The cache key carries the branch **and the commit HEAD points at**, so a push answers fresh straight away — the one moment a stale band is most obviously wrong — while a 30-second TTL covers CI moving under a commit that has not changed. `PR_BAND_TTL` changes it; `[↻]` and `/pr refresh` go past it.
+`bin/pr-status` caches `status` on disk and the hook polls that every five seconds. The cache key carries the branch **and the commit HEAD points at**, so a push answers fresh straight away — the one moment a stale band is most obviously wrong — while a 30-second TTL covers CI moving under a commit that has not changed. `PR_BAND_TTL` changes it; `[↻]` and `/pr-status refresh` go past it.
 
 Each fetch is two round trips: `gh pr view --json` for the pull request and its check rollup, then one GraphQL query for the review threads. Whether a thread is resolved lives only in the GraphQL schema — `gh pr view` cannot answer it — and it is the fact the band most wants, so the second request is the price of the `threads` row.
 
 The feature is early access, so an environment variable turns it on (as of 2.1.272):
 
 ```bash
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/claude-mods/plugins/pr
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/claude-mods/plugins/pr-status
 ```
 
 The buttons answer to mouse clicks only.
@@ -107,9 +107,9 @@ The buttons answer to mouse clicks only.
 Development (from the repository root):
 
 ```bash
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin validate ./plugins/pr
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test ./plugins/pr
-python3 plugins/pr/tests/test_pr.py
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin validate ./plugins/pr-status
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test ./plugins/pr-status
+python3 plugins/pr-status/tests/test_pr_status.py
 bunx --bun tsc -p tsconfig.json
 ```
 
@@ -118,8 +118,8 @@ The type declarations (`.claude/types/claude-code.d.ts`) and `tsconfig.json` liv
 ## Known limits
 
 - The band's (function hooks) API is early access and can change between Claude Code releases.
-- **It reads; it does not write.** No approving, no merging, no commenting. `/pr web` hands you to the browser for those.
+- **It reads; it does not write.** No approving, no merging, no commenting. `/pr-status web` hands you to the browser for those.
 - A pull request opened from a fork whose branch is not on the upstream repository is resolved by `gh` the same way `gh pr view` resolves it — if `gh pr view` cannot find it from your checkout, neither can the band.
 - The first 100 review threads are read. Past that, `unresolved` undercounts.
 - A repository whose checks post to an `http://` host shows those check names without links (see above).
-- `gh` must be authenticated for the host. The band draws nothing rather than an error when it is not; `/pr show` prints what `gh` said.
+- `gh` must be authenticated for the host. The band draws nothing rather than an error when it is not; `/pr-status show` prints what `gh` said.

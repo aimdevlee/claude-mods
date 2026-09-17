@@ -7,7 +7,7 @@ A collection of Claude Code extensions (mods). One mod is one directory under `p
 | mod | What it is |
 | --- | --- |
 | [player](plugins/player/) | A band above the prompt that drives Apple Music (macOS) |
-| [pr](plugins/pr/) | A band above the prompt for your branch's pull request, with a link to every GitHub screen |
+| [pr-status](plugins/pr-status/) | A band above the prompt for your branch's pull request, with a link to every GitHub screen |
 
 ## Layout
 

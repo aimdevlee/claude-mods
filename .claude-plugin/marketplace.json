@@ -10,8 +10,8 @@
       "category": "productivity"
     },
     {
-      "name": "pr",
-      "source": "./plugins/pr",
+      "name": "pr-status",
+      "source": "./plugins/pr-status",
       "category": "productivity"
     }
   ]

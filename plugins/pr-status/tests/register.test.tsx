@@ -105,7 +105,7 @@ const SESSION = { cwd: '/work', surface: 'terminal', isInteractive: true } as co
 
 const pr = (args = '') =>
   ({
-    command: 'pr',
+    command: 'pr-status',
     args,
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 160 },
@@ -281,15 +281,15 @@ describe('fitting the rows', () => {
 })
 
 describe('the band', () => {
-  test('registers /pr and polls the CLI on a clock', async ($, on) => {
+  test('registers /pr-status and polls the CLI on a clock', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
-    expect(w.commands).toEqual(['pr'])
+    expect(w.commands).toEqual(['pr-status'])
 
     await w.clock.advance(5000)
     await w.clock.settle()
-    expect(w.runs[0]?.[0]).toMatch(/\/bin\/pr$/)
+    expect(w.runs[0]?.[0]).toMatch(/\/bin\/pr-status$/)
     expect(verbs(w.runs)).toEqual(['status'])
   })
 
@@ -303,7 +303,7 @@ describe('the band', () => {
     const drawn = JSON.stringify(await $.ui.render(BAND))
     expect(drawn, 'compact is the resting state').toContain('#58767')
     expect(drawn).toContain('✓ 7 × 2 ⋯ 1')
-    expect(w.commands, 'and nothing had to be typed').toEqual(['pr'])
+    expect(w.commands, 'and nothing had to be typed').toEqual(['pr-status'])
   })
 
   test('a branch with no pull request draws nothing at all', async ($, on) => {
@@ -324,7 +324,7 @@ describe('the band', () => {
     expect(engineDrew, 'nothing to say, so the row is given back').toBe(true)
   })
 
-  test('/pr opens the full band: checks, review, remarks and a link per screen', async ($, on) => {
+  test('/pr-status opens the full band: checks, review, remarks and a link per screen', async ($, on) => {
     const w = world(on)
 
     await $.session.start(SESSION)
@@ -408,7 +408,7 @@ describe('the band', () => {
     expect(JSON.stringify(await $.ui.render(BAND))).toContain('no pull request for this branch')
   })
 
-  test('/pr again folds the band back to the compact row', async ($, on) => {
+  test('/pr-status again folds the band back to the compact row', async ($, on) => {
     const w = world(on)
     await $.session.start(SESSION)
     await w.clock.advance(5000)
@@ -425,17 +425,17 @@ describe('the band', () => {
     expect(folded, 'and loses the byline').not.toContain('timoschilling')
   })
 
-  test('the size button is the same move as typing /pr', async ($, on) => {
+  test('the size button is the same move as typing /pr-status', async ($, on) => {
     const w = world(on)
     await $.session.start(SESSION)
     await w.clock.advance(5000)
     await w.clock.settle()
 
     await $.ui.render(BAND)
-    await $.ui.press({ plugin: 'pr', key: 'size' })
+    await $.ui.press({ plugin: 'pr-status', key: 'size' })
     expect(JSON.stringify(await $.ui.render(BAND))).toContain('timoschilling')
 
-    await $.ui.press({ plugin: 'pr', key: 'size' })
+    await $.ui.press({ plugin: 'pr-status', key: 'size' })
     expect(JSON.stringify(await $.ui.render(BAND))).not.toContain('timoschilling')
   })
 
@@ -446,7 +446,7 @@ describe('the band', () => {
     await w.clock.settle()
 
     await $.ui.render(BAND)
-    await $.ui.press({ plugin: 'pr', key: 'refresh' })
+    await $.ui.press({ plugin: 'pr-status', key: 'refresh' })
     await w.clock.settle()
     expect(verbs(w.runs)).toContain('refresh')
   })
@@ -461,7 +461,7 @@ describe('the band', () => {
     expect(verbs(w.runs)).toContain('comments')
   })
 
-  test('/pr <number> pins the band to another pull request', async ($, on) => {
+  test('/pr-status <number> pins the band to another pull request', async ($, on) => {
     const w = world(on)
     await $.session.start(SESSION)
     await w.clock.settle()
@@ -480,7 +480,7 @@ describe('the band', () => {
     expect(w.runs.some(argv => argv[1] === 'status' && argv[2] === undefined)).toBe(true)
   })
 
-  test('/pr close leaves the compact row behind, not an empty band', async ($, on) => {
+  test('/pr-status close leaves the compact row behind, not an empty band', async ($, on) => {
     const w = world(on)
     await $.session.start(SESSION)
     await w.clock.advance(5000)

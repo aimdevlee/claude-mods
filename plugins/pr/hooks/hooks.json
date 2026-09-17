@@ -1,4 +1,0 @@
-{
-  "description": "The pull request band: one row above the prompt for the branch's pull request, /pr opens the full band with its checks, reviewers, unresolved remarks and a hyperlink to each GitHub screen, polled through bin/pr",
-  "modules": ["./register.tsx"]
-}

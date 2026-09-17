@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pr — the pull request for the branch you are on, read through `gh`.
+"""pr-status — the pull request for the branch you are on, read through `gh`.
 
 Everything here comes from GitHub's own interfaces: `gh pr view --json` for the
 pull request and its check rollup, and one GraphQL query for the review threads,
@@ -65,7 +65,7 @@ BODY_CHARS = 240
 # `pr comments` prints them all from its own fetch, so this is the band's bound.
 MAX_THREADS = 20
 
-USAGE = """usage: pr <command> [<number>]
+USAGE = """usage: pr-status <command> [<number>]
 
   status [n]     the pull request as JSON — what the band above the prompt polls
   show [n]       the pull request at a glance

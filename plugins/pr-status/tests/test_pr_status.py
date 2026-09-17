@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the shaping `bin/pr` does. Run: python3 tests/test_pr.py
+"""Tests for the shaping `bin/pr-status` does. Run: python3 tests/test_pr_status.py
 
 What gh answers with is turned into the one object the band draws from, and that
 turning is pure — no network and no repository. The fetches themselves, the
@@ -13,9 +13,9 @@ import sys
 sys.dont_write_bytecode = True  # keep bin/ free of __pycache__
 
 spec = importlib.util.spec_from_loader(
-    "pr",
+    "pr_status",
     importlib.machinery.SourceFileLoader(
-        "pr", str(pathlib.Path(__file__).parent.parent / "bin" / "pr")))
+        "pr_status", str(pathlib.Path(__file__).parent.parent / "bin" / "pr-status")))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
@@ -226,4 +226,4 @@ if FAILED:
     print("\n".join(FAILED))
     print(f"\n{len(FAILED)} failed")
     sys.exit(1)
-print("bin/pr: all checks passed")
+print("bin/pr-status: all checks passed")
