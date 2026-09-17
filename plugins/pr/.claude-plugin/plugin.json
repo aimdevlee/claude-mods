@@ -1,0 +1,8 @@
+{
+  "name": "pr",
+  "description": "The pull request for your branch above the prompt: checks, review, unresolved remarks and a link to every screen",
+  "version": "0.1.0",
+  "author": { "name": "aimdevlee" },
+  "license": "MIT",
+  "keywords": ["github", "pull-request", "review", "ci", "gh"]
+}

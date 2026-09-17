@@ -1,0 +1,571 @@
+#!/usr/bin/env python3
+"""pr — the pull request for the branch you are on, read through `gh`.
+
+Everything here comes from GitHub's own interfaces: `gh pr view --json` for the
+pull request and its check rollup, and one GraphQL query for the review threads,
+which `gh pr view` does not expose (whether a thread is resolved lives only in
+the GraphQL schema). Two round trips, answered as one JSON object.
+
+`status` is what the band above the prompt polls, so it is cached on disk. The
+key carries the branch and the commit the branch points at, so a push answers
+fresh straight away, and a TTL covers the rest — CI moves while HEAD stands
+still. Without the cache a band polling every few seconds would be a request
+every few seconds, and GitHub rate-limits by the hour.
+
+The other verbs are for reading in the terminal and print for a person.
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+# The fields `gh pr view` can answer for in one request. `statusCheckRollup`
+# carries every check run on the head commit, which is what the band counts.
+VIEW_FIELDS = (
+    "number,title,url,state,isDraft,author,baseRefName,headRefName,"
+    "additions,deletions,changedFiles,body,mergeable,mergeStateStatus,"
+    "reviewDecision,latestReviews,reviewRequests,statusCheckRollup"
+)
+
+# Review threads, and whether each is resolved — the one thing `gh pr view`
+# leaves out. `line` is null on an outdated thread, so the original line is
+# asked for as well and stands in.
+THREADS_QUERY = """
+query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviewThreads(first:100){
+        totalCount
+        nodes{
+          isResolved isOutdated path line originalLine
+          comments(first:1){ nodes{ author{login} bodyText url } }
+        }
+      }
+    }
+  }
+}
+"""
+
+# How long a fetched status stays good. CI moves while the commit does not, so
+# the commit alone cannot say when to look again.
+TTL_SECONDS = float(os.environ.get("PR_BAND_TTL", "30"))
+
+# gh talks to the network; a hung request must not hang the band's poll.
+TIMEOUT_SECONDS = 25
+
+# How much of the description the band carries. It draws one clipped row of it,
+# so this only has to be more than any row could hold.
+BODY_CHARS = 240
+
+# Unresolved threads kept in `status`. The band draws one and counts the rest;
+# `pr comments` prints them all from its own fetch, so this is the band's bound.
+MAX_THREADS = 20
+
+USAGE = """usage: pr <command> [<number>]
+
+  status [n]     the pull request as JSON — what the band above the prompt polls
+  show [n]       the pull request at a glance
+  body [n]       the description
+  checks [n]     every check run, with its URL
+  reviews [n]    who approved, who asked for changes, who is still awaited
+  comments [n]   unresolved review threads: file:line, author, URL
+  files [n]      changed files with +/-
+  diff [n]       the unified diff
+  web [n]        open it in the browser
+  refresh [n]    fetch again, ignoring the cache, and print the JSON
+
+With no number it is the pull request for the branch you are on.
+"""
+
+
+# --- reading git and gh ------------------------------------------------------
+
+
+def run(argv, timeout=TIMEOUT_SECONDS):
+    """Run a command and hand back (exit code, stdout, stderr), never raising."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return 127, "", f"{argv[0]}: not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: timed out"
+    return done.returncode, done.stdout, done.stderr
+
+
+def git(*args):
+    code, out, _ = run(["git", *args], timeout=5)
+    return out.strip() if code == 0 else ""
+
+
+def gh_view(number):
+    """`gh pr view` as parsed JSON, or an error string saying why not."""
+    argv = ["gh", "pr", "view"]
+    if number:
+        argv.append(str(number))
+    argv += ["--json", VIEW_FIELDS]
+    code, out, err = run(argv)
+    if code != 0:
+        return None, (err.strip() or out.strip() or "gh pr view failed")
+    try:
+        return json.loads(out), None
+    except json.JSONDecodeError:
+        return None, "gh pr view answered something other than JSON"
+
+
+def gh_threads(owner, name, number):
+    """The review threads, or [] when the query is refused — the band still draws."""
+    code, out, _ = run([
+        "gh", "api", "graphql",
+        "-f", f"owner={owner}",
+        "-f", f"name={name}",
+        "-F", f"number={number}",
+        "-f", f"query={THREADS_QUERY}",
+    ])
+    # A GraphQL refusal still prints a JSON body with `errors` in it, and gh
+    # adds a line of its own after it, so the exit code alone does not say
+    # whether there is anything to read.
+    if code != 0 and not out.startswith("{"):
+        return []
+    try:
+        body = json.loads(out[: out.rindex("}") + 1])
+    except (json.JSONDecodeError, ValueError):
+        return []
+    pr = (body.get("data") or {}).get("repository") or {}
+    pr = pr.get("pullRequest") or {}
+    return ((pr.get("reviewThreads") or {}).get("nodes")) or []
+
+
+# --- shaping what came back --------------------------------------------------
+
+
+def parse_pr_url(url):
+    """(owner, name, number) out of a pull request URL, or None."""
+    found = re.search(r"/([^/]+)/([^/]+)/pull/(\d+)", url or "")
+    return (found.group(1), found.group(2), int(found.group(3))) if found else None
+
+
+# A check that finished on any of these did not pass and did not merely skip.
+FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+FAILED_STATES = {"FAILURE", "ERROR"}
+
+
+def classify_checks(rollup):
+    """Count the head commit's checks, and name the ones worth a link.
+
+    Two shapes arrive in the same list: a CheckRun (Actions and the like) says
+    `status` then `conclusion`, while a StatusContext (an external service
+    posting a commit status) has only `state`. A skipped or neutral check is
+    neither a pass nor a failure — counting it as either misreads a rollup that
+    skips half its jobs by design.
+    """
+    passed = failed = pending = skipped = 0
+    failing, running = [], []
+    for check in rollup or []:
+        if check.get("__typename") == "StatusContext":
+            name = check.get("context") or "status"
+            url = check.get("targetUrl") or ""
+            state = check.get("state") or ""
+            if state in FAILED_STATES:
+                failed += 1
+                failing.append({"name": name, "url": url})
+            elif state == "SUCCESS":
+                passed += 1
+            else:
+                pending += 1
+                running.append({"name": name, "url": url})
+            continue
+        name = check.get("name") or "check"
+        url = check.get("detailsUrl") or ""
+        if check.get("status") != "COMPLETED":
+            pending += 1
+            running.append({"name": name, "url": url})
+        elif check.get("conclusion") in FAILED_CONCLUSIONS:
+            failed += 1
+            failing.append({"name": name, "url": url})
+        elif check.get("conclusion") == "SUCCESS":
+            passed += 1
+        else:
+            skipped += 1
+    total = passed + failed + pending + skipped
+    if total == 0:
+        state = "none"
+    elif failed:
+        state = "fail"
+    elif pending:
+        state = "pending"
+    else:
+        state = "pass"
+    return {
+        "state": state,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "pending": pending,
+        "skipped": skipped,
+        "failing": failing,
+        "running": running,
+    }
+
+
+def login_of(node):
+    """The name to print for a user, a team or an author GitHub no longer has."""
+    if not isinstance(node, dict):
+        return ""
+    author = node.get("author")
+    if isinstance(author, dict):
+        return author.get("login") or ""
+    return node.get("login") or node.get("name") or node.get("slug") or ""
+
+
+def classify_reviews(latest, requests, decision):
+    """Who has answered and who is still being waited on.
+
+    `latestReviews` is one review per person — their current position, not the
+    history — so a reviewer who asked for changes and then approved counts once,
+    as an approval.
+    """
+    approved, changes, commented = [], [], []
+    for review in latest or []:
+        who = login_of(review)
+        if not who:
+            continue
+        state = review.get("state")
+        if state == "APPROVED":
+            approved.append(who)
+        elif state == "CHANGES_REQUESTED":
+            changes.append(who)
+        elif state == "COMMENTED":
+            commented.append(who)
+    requested = [login_of(r) for r in requests or []]
+    return {
+        "decision": decision or "",
+        "approved": approved,
+        "changes": changes,
+        "commented": commented,
+        "requested": [r for r in requested if r],
+    }
+
+
+def one_line(text, limit):
+    """A block of Markdown squeezed into one line of at most `limit` characters."""
+    text = re.sub(r"<!--.*?-->", " ", text or "", flags=re.S)
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[: limit - 1] + "…" if len(text) > limit else text
+
+
+def summarize_body(body):
+    """The first thing the description actually says.
+
+    A repository template opens with headings and HTML comments, so the first
+    line is `## 概要` far more often than it is the summary. Skip past the
+    headings and the checkbox rows to the first line with prose in it.
+    """
+    for raw in re.sub(r"<!--.*?-->", "", body or "", flags=re.S).splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("---"):
+            continue
+        if re.match(r"^[-*]\s*\[[ xX]\]", line):  # an unticked template checkbox
+            continue
+        return one_line(line, BODY_CHARS)
+    return ""
+
+
+def pick_threads(nodes):
+    """The unresolved review threads, newest first, with where each one points."""
+    items = []
+    for node in nodes or []:
+        if node.get("isResolved"):
+            continue
+        comments = (node.get("comments") or {}).get("nodes") or []
+        first = comments[0] if comments else {}
+        items.append({
+            "path": node.get("path") or "",
+            "line": node.get("line") or node.get("originalLine") or 0,
+            "outdated": bool(node.get("isOutdated")),
+            "author": login_of(first),
+            "text": one_line(first.get("bodyText"), 160),
+            "url": first.get("url") or "",
+        })
+    return {"unresolved": len(items), "items": items[:MAX_THREADS]}
+
+
+def build_status(view, threads, branch):
+    """One object holding everything the band draws, from the two fetches."""
+    url = view.get("url") or ""
+    state = (view.get("state") or "").lower() or "open"
+    if state == "open" and view.get("isDraft"):
+        state = "draft"
+    return {
+        "state": state,
+        "branch": branch,
+        "number": view.get("number") or 0,
+        "title": view.get("title") or "",
+        "url": url,
+        "author": login_of(view),
+        "base": view.get("baseRefName") or "",
+        "head": view.get("headRefName") or "",
+        "additions": view.get("additions") or 0,
+        "deletions": view.get("deletions") or 0,
+        "files": view.get("changedFiles") or 0,
+        "body": summarize_body(view.get("body")),
+        "mergeable": view.get("mergeable") or "",
+        "mergeState": view.get("mergeStateStatus") or "",
+        "checks": classify_checks(view.get("statusCheckRollup")),
+        "reviews": classify_reviews(
+            view.get("latestReviews"),
+            view.get("reviewRequests"),
+            view.get("reviewDecision"),
+        ),
+        "threads": pick_threads(threads),
+        # The screens the band links to. GitHub builds each from the pull
+        # request's own URL, so they need no further request to discover.
+        "links": {
+            "pr": url,
+            "checks": f"{url}/checks" if url else "",
+            "files": f"{url}/files" if url else "",
+            "commits": f"{url}/commits" if url else "",
+        },
+    }
+
+
+def nothing(reason, branch=""):
+    return {"state": "none", "reason": reason, "branch": branch}
+
+
+# --- the cache ---------------------------------------------------------------
+
+
+def cache_file(branch, head, number):
+    """Where this branch's answer is kept.
+
+    The commit is in the key, so a push is a different key and answers fresh
+    without waiting the TTL out — the one moment a stale band is most obviously
+    wrong.
+    """
+    root = git("rev-parse", "--show-toplevel") or os.getcwd()
+    key = hashlib.sha1(f"{root}|{branch}|{head}|{number}".encode()).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), "claude-pr-band", f"{key}.json")
+
+
+def cached(path):
+    try:
+        if time.time() - os.path.getmtime(path) > TTL_SECONDS:
+            return None
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def keep(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Written beside the target and moved into place, so a band reading the
+        # file while this writes never sees half an object.
+        temporary = f"{path}.{os.getpid()}"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(value, handle)
+        os.replace(temporary, path)
+    except OSError:
+        pass  # a cache that cannot be written is a slower band, not a broken one
+
+
+def status(number=None, fresh=False):
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    if not branch:
+        return nothing("not a git repository")
+    head = git("rev-parse", "HEAD")
+    path = cache_file(branch, head, number or "")
+    if not fresh:
+        held = cached(path)
+        if held is not None:
+            return held
+
+    view, error = gh_view(number)
+    if view is None:
+        lowered = error.lower()
+        if "no pull requests found" in lowered or "no open pull requests" in lowered:
+            answer = nothing("no pull request for this branch", branch)
+        elif "could not resolve" in lowered or "not found" in lowered:
+            answer = nothing("no such pull request", branch)
+        else:
+            answer = nothing(one_line(error, 120), branch)
+        keep(path, answer)
+        return answer
+
+    parts = parse_pr_url(view.get("url") or "")
+    threads = gh_threads(*parts) if parts else []
+    answer = build_status(view, threads, branch)
+    keep(path, answer)
+    return answer
+
+
+# --- printing for a person ---------------------------------------------------
+
+
+MARKS = {"pass": "✓", "fail": "✗", "pending": "⧗", "none": "·"}
+BADGES = {"open": "◔", "draft": "◌", "merged": "✔", "closed": "✕"}
+
+
+def show(state):
+    if state["state"] == "none":
+        return state.get("reason", "no pull request")
+    lines = [
+        f"{BADGES.get(state['state'], '◔')} #{state['number']} {state['title']}"
+        f"{'' if state['state'] == 'open' else '  [' + state['state'] + ']'}",
+        f"  {state['head']} → {state['base']}  ·  @{state['author']}"
+        f"  ·  +{state['additions']} −{state['deletions']}  {state['files']} files",
+    ]
+    if state["body"]:
+        lines.append(f"  {state['body']}")
+    lines.append("")
+    lines.append(f"  checks   {checks_line(state)}")
+    lines.append(f"  reviews  {reviews_line(state)}")
+    lines.append(f"  threads  {state['threads']['unresolved']} unresolved")
+    lines.append("")
+    for name, url in state["links"].items():
+        lines.append(f"  {name:9}{url}")
+    return "\n".join(lines)
+
+
+def checks_line(state):
+    checks = state["checks"]
+    if checks["state"] == "none":
+        return "no checks"
+    parts = [f"✓ {checks['passed']}"]
+    if checks["failed"]:
+        parts.append(f"✗ {checks['failed']}")
+    if checks["pending"]:
+        parts.append(f"⧗ {checks['pending']}")
+    if checks["skipped"]:
+        parts.append(f"· {checks['skipped']} skipped")
+    named = [c["name"] for c in checks["failing"]] or [c["name"] for c in checks["running"]]
+    return "  ".join(parts) + (f"   {', '.join(named[:3])}" if named else "")
+
+
+def reviews_line(state):
+    reviews = state["reviews"]
+    parts = []
+    if reviews["approved"]:
+        parts.append("approved " + " ".join("@" + who for who in reviews["approved"]))
+    if reviews["changes"]:
+        parts.append("changes " + " ".join("@" + who for who in reviews["changes"]))
+    if reviews["commented"]:
+        parts.append("commented " + " ".join("@" + who for who in reviews["commented"]))
+    if reviews["requested"]:
+        parts.append("waiting on " + " ".join("@" + who for who in reviews["requested"]))
+    return "  ·  ".join(parts) or (reviews["decision"].lower().replace("_", " ") or "no reviews")
+
+
+def checks(state):
+    if state["state"] == "none":
+        return state.get("reason", "no pull request")
+    rows = [f"#{state['number']}  {checks_line(state)}", ""]
+    for check in state["checks"]["failing"]:
+        rows.append(f"  ✗ {check['name']}\n    {check['url']}")
+    for check in state["checks"]["running"]:
+        rows.append(f"  ⧗ {check['name']}\n    {check['url']}")
+    rows.append(f"\n  {state['links']['checks']}")
+    return "\n".join(rows)
+
+
+def reviews(state):
+    if state["state"] == "none":
+        return state.get("reason", "no pull request")
+    return f"#{state['number']}  {reviews_line(state)}\n\n  {state['links']['pr']}"
+
+
+def comments(state):
+    if state["state"] == "none":
+        return state.get("reason", "no pull request")
+    threads = state["threads"]
+    if not threads["unresolved"]:
+        return f"#{state['number']}  no unresolved review threads"
+    rows = [f"#{state['number']}  {threads['unresolved']} unresolved", ""]
+    for item in threads["items"]:
+        where = f"{item['path']}:{item['line']}" if item["path"] else "the conversation"
+        rows.append(f"  {where}{'  (outdated)' if item['outdated'] else ''}")
+        rows.append(f"    @{item['author']}  {item['text']}")
+        rows.append(f"    {item['url']}")
+    return "\n".join(rows)
+
+
+def body(state):
+    if state["state"] == "none":
+        return state.get("reason", "no pull request")
+    # The cached status carries only the first line, which is what the band
+    # draws; reading the description means asking for the whole of it.
+    code, out, err = run(["gh", "pr", "view", str(state["number"]), "--json", "body",
+                          "-q", ".body"])
+    if code != 0:
+        return err.strip() or "gh pr view failed"
+    return out.strip() or "(no description)"
+
+
+def files(state):
+    if state["state"] == "none":
+        return state.get("reason", "no pull request")
+    code, out, err = run(["gh", "pr", "view", str(state["number"]), "--json", "files"])
+    if code != 0:
+        return err.strip() or "gh pr view failed"
+    try:
+        changed = json.loads(out).get("files") or []
+    except json.JSONDecodeError:
+        return "gh pr view answered something other than JSON"
+    width = max((len(f.get("path", "")) for f in changed), default=0)
+    rows = [f"#{state['number']}  {len(changed)} files"
+            f"  +{state['additions']} −{state['deletions']}", ""]
+    for one in changed:
+        rows.append(f"  {one.get('path', ''):<{width}}  "
+                    f"+{one.get('additions', 0)} −{one.get('deletions', 0)}")
+    rows.append(f"\n  {state['links']['files']}")
+    return "\n".join(rows)
+
+
+def passthrough(argv, number):
+    """Hand a verb straight to gh, which already prints it for a person."""
+    if number:
+        argv.append(str(number))
+    code, out, err = run(["gh", "pr", *argv], timeout=60)
+    sys.stdout.write(out)
+    if code != 0:
+        sys.stderr.write(err)
+    return code
+
+
+def main(args):
+    verb = args[0] if args else "show"
+    rest = args[1:]
+    number = int(rest[0]) if rest and rest[0].isdigit() else None
+
+    if verb in ("help", "-h", "--help"):
+        print(USAGE, end="")
+        return 0
+    if verb == "diff":
+        return passthrough(["diff"], number)
+    if verb == "web":
+        return passthrough(["view", "--web"], number)
+
+    if verb == "refresh":
+        print(json.dumps(status(number, fresh=True), ensure_ascii=False))
+        return 0
+    if verb == "status":
+        print(json.dumps(status(number), ensure_ascii=False))
+        return 0
+
+    printers = {"show": show, "checks": checks, "reviews": reviews,
+                "comments": comments, "body": body, "files": files}
+    if verb not in printers:
+        sys.stderr.write(USAGE)
+        return 2
+    print(printers[verb](status(number)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

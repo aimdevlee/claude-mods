@@ -8,6 +8,11 @@
       "name": "player",
       "source": "./plugins/player",
       "category": "productivity"
+    },
+    {
+      "name": "pr",
+      "source": "./plugins/pr",
+      "category": "productivity"
     }
   ]
 }
